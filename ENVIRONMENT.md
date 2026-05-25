@@ -374,12 +374,42 @@ BACKEND_PORT=8000
 TMP_DIR=/var/tmp/printer-backend
 MAX_UPLOAD_MB=50
 PREVIEW_DPI=110
-CORS_ALLOWED_ORIGINS=http://192.168.100.99:5173,http://ubuntu26-remote.local:5173,http://localhost:5173,http://127.0.0.1:5173
+CORS_ALLOWED_ORIGINS=http://192.168.100.99:8000,http://ubuntu26-remote.local:8000,http://drukarka.local:8000,http://192.168.100.99:5173,...
 ```
+
+### CORS Security Model
+
+**Why CORS addresses are safe in this public repository:**
+
+- **Private network range:** `192.168.100.0/24` is RFC 1918 (non-routable private IP), not accessible from the internet
+- **mDNS hostnames:** `.local` domains resolve only within the local network via multicast DNS
+- **Public nature of CORS:** CORS policy is intentionally public; it's revealed in browser preflight OPTIONS requests
+- **No credentials exposed:** CORS allowlist contains no authentication tokens, API keys, or secrets
+
+**Customization for different deployments:**
+
+Override `CORS_ALLOWED_ORIGINS` via environment variable (comma-separated list):
+
+```bash
+# Docker Compose
+export CORS_ALLOWED_ORIGINS="http://my-api:8000,http://my-frontend:5173"
+
+# Plain environment
+export CORS_ALLOWED_ORIGINS="http://different-ip:8000"
+```
+
+**Default policy includes:**
+
+- Backend API: `192.168.100.99:8000`, `ubuntu26-remote.local:8000`, `drukarka.local:8000`
+- Vite dev ports (5173-5175) on all configured hosts
+- Production ports (80, 443) on `drukarka.local` (with and without explicit port)
+- Localhost for local development
+
+See `app/settings.py` for the complete allowlist.
 
 `CORS_ALLOWED_ORIGINS` is a comma-separated list of browser frontend origins.
 The Print Bar frontend should use
-`VITE_PRINTER_API_BASE_URL=http://192.168.100.99:8000`.
+`VITE_PRINTER_API_BASE_URL=http://192.168.100.99:8000` or the appropriate hostname.
 
 For Docker Compose, the verified default is to mount the host CUPS socket:
 
