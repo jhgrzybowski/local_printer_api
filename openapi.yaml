@@ -7,10 +7,12 @@ info:
     printer options, and CUPS jobs through a local CUPS queue.
 
 servers:
-  - url: http://localhost:8000
-    description: Local development server
+  - url: http://192.168.100.99:8000
+    description: Backend IP on LAN
   - url: http://ubuntu26-remote.local:8000
-    description: Example LAN server
+    description: Example LAN server hostname
+  - url: http://drukarka.local:8000
+    description: Alternative LAN server hostname
 
 tags:
   - name: Health
