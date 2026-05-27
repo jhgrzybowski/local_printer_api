@@ -6,6 +6,7 @@ from typing import Any
 
 from app.settings import QUEUE_NAME
 from app.services.lpoptions_parser import parse_lpoptions, parse_ppd_options
+from app.services.printer_reachability import probe_printer_reachability
 
 
 class CupsClientError(RuntimeError):
@@ -50,10 +51,12 @@ class CupsClient:
         if self.queue_name not in printers:
             return {"name": self.queue_name, "exists": False, "attributes": {}}
 
+        attributes = dict(printers[self.queue_name])
         return {
             "name": self.queue_name,
             "exists": True,
-            "attributes": dict(printers[self.queue_name]),
+            "attributes": attributes,
+            "network": probe_printer_reachability(attributes.get("device-uri")),
         }
 
     def get_option_capabilities(self) -> dict[str, set[str]]:

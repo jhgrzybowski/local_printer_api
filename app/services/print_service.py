@@ -34,13 +34,15 @@ def ensure_printer_ready(client: CupsClient) -> dict[str, object]:
     status = translate_queue_status(queue)
     if not status["exists"]:
         raise PrintRequestError(f"Queue {client.queue_name} is missing", 503)
+    reasons = [str(reason).lower() for reason in status.get("reasons", [])]
+    if status["state"] == "offline":
+        raise PrintRequestError(f"Printer appears offline: {', '.join(reasons)}", 503)
     if status["state"] == "stopped" or status["enabled"] is False:
         raise PrintRequestError(f"Queue {client.queue_name} is stopped", 409)
     if status["accepting_jobs"] is False:
         raise PrintRequestError(f"Queue {client.queue_name} is not accepting jobs", 409)
 
-    reasons = [str(reason).lower() for reason in status.get("reasons", [])]
-    if any("offline" in reason for reason in reasons):
+    if any("offline" in reason or reason == "network-unreachable" for reason in reasons):
         raise PrintRequestError(f"Printer appears offline: {', '.join(reasons)}", 503)
     return status
 
