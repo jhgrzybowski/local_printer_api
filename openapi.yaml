@@ -377,6 +377,33 @@ components:
             - string
             - "null"
 
+    PrinterNetworkStatus:
+      type: object
+      required: [checked, reachable]
+      properties:
+        checked:
+          type: boolean
+          description: Whether the backend attempted a direct printer network probe.
+        host:
+          type:
+            - string
+            - "null"
+          example: 192.168.100.100
+        port:
+          type:
+            - integer
+            - "null"
+          example: 515
+        reachable:
+          type:
+            - boolean
+            - "null"
+          description: Whether the configured printer endpoint accepted a TCP connection.
+        error:
+          type:
+            - string
+            - "null"
+
     PrinterStatus:
       type: object
       required:
@@ -423,6 +450,8 @@ components:
             type: string
         cups:
           $ref: "#/components/schemas/CupsStatus"
+        network:
+          $ref: "#/components/schemas/PrinterNetworkStatus"
 
     OptionBlock:
       type: object

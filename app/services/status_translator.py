@@ -10,6 +10,17 @@ CUPS_STATE_LABELS = {
     5: "stopped",
 }
 
+OFFLINE_REASON_TOKENS = (
+    "offline",
+    "not-connected",
+    "not connected",
+    "unreachable",
+    "connection-failed",
+    "connection failed",
+    "timed-out",
+    "timeout",
+)
+
 
 def translate_queue_status(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     queue_name = str(snapshot.get("name") or "")
@@ -35,9 +46,17 @@ def translate_queue_status(snapshot: Mapping[str, Any]) -> dict[str, Any]:
 
     state_code = _as_int(attributes.get("printer-state"))
     accepting_jobs = _as_bool(attributes.get("printer-is-accepting-jobs"))
-    state = CUPS_STATE_LABELS.get(state_code, "unknown")
+    reasons = _as_list(attributes.get("printer-state-reasons"))
+    network = _as_network(snapshot.get("network"))
+    if _network_unreachable(network) and "network-unreachable" not in reasons:
+        reasons.append("network-unreachable")
+    state = (
+        "offline"
+        if _has_offline_reason(reasons) or _network_unreachable(network)
+        else CUPS_STATE_LABELS.get(state_code, "unknown")
+    )
 
-    return {
+    status = {
         "queue_name": queue_name,
         "exists": True,
         "state": state,
@@ -47,8 +66,11 @@ def translate_queue_status(snapshot: Mapping[str, Any]) -> dict[str, Any]:
         "message": str(attributes.get("printer-state-message") or ""),
         "device_uri": attributes.get("device-uri"),
         "location": attributes.get("printer-location"),
-        "reasons": _as_list(attributes.get("printer-state-reasons")),
+        "reasons": reasons,
     }
+    if network is not None:
+        status["network"] = network
+    return status
 
 
 def translate_error_status(queue_name: str, error: str) -> dict[str, Any]:
@@ -63,6 +85,38 @@ def translate_error_status(queue_name: str, error: str) -> dict[str, Any]:
         "device_uri": None,
         "location": None,
         "reasons": [],
+    }
+
+
+def _has_offline_reason(reasons: list[str]) -> bool:
+    normalized_reasons = [
+        reason.strip().lower().replace("_", "-") for reason in reasons
+    ]
+    return any(
+        token in reason
+        for reason in normalized_reasons
+        for token in OFFLINE_REASON_TOKENS
+    )
+
+
+def _network_unreachable(network: dict[str, Any] | None) -> bool:
+    return bool(
+        network
+        and network.get("checked") is True
+        and network.get("reachable") is False
+    )
+
+
+def _as_network(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping):
+        return None
+
+    return {
+        "checked": _as_bool(value.get("checked")) is True,
+        "host": str(value["host"]) if value.get("host") is not None else None,
+        "port": _as_int(value.get("port")),
+        "reachable": _as_bool(value.get("reachable")),
+        "error": str(value["error"]) if value.get("error") is not None else None,
     }
 
 

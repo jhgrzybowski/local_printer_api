@@ -64,6 +64,59 @@ def test_translate_stopped_queue_with_string_values() -> None:
     assert status["reasons"] == ["paused"]
 
 
+def test_translate_offline_reason_reports_offline_state() -> None:
+    status = translate_queue_status(
+        {
+            "name": "Canon_MG5350",
+            "exists": True,
+            "attributes": {
+                "printer-state": 3,
+                "printer-is-accepting-jobs": True,
+                "printer-state-reasons": ["offline-report"],
+            },
+        }
+    )
+
+    assert status["state"] == "offline"
+    assert status["state_code"] == 3
+    assert status["accepting_jobs"] is True
+    assert status["enabled"] is True
+    assert status["reasons"] == ["offline-report"]
+
+
+def test_translate_unreachable_network_probe_reports_offline_state() -> None:
+    status = translate_queue_status(
+        {
+            "name": "Canon_MG5350",
+            "exists": True,
+            "attributes": {
+                "printer-state": 3,
+                "printer-is-accepting-jobs": True,
+                "printer-state-reasons": ["none"],
+            },
+            "network": {
+                "checked": True,
+                "host": "192.168.100.100",
+                "port": 515,
+                "reachable": False,
+                "error": "timed out",
+            },
+        }
+    )
+
+    assert status["state"] == "offline"
+    assert status["state_code"] == 3
+    assert status["enabled"] is True
+    assert status["reasons"] == ["none", "network-unreachable"]
+    assert status["network"] == {
+        "checked": True,
+        "host": "192.168.100.100",
+        "port": 515,
+        "reachable": False,
+        "error": "timed out",
+    }
+
+
 def test_translate_error_status() -> None:
     status = translate_error_status("Canon_MG5350", "CUPS query failed")
 
