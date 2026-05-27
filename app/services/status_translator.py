@@ -10,6 +10,17 @@ CUPS_STATE_LABELS = {
     5: "stopped",
 }
 
+OFFLINE_REASON_TOKENS = (
+    "offline",
+    "not-connected",
+    "not connected",
+    "unreachable",
+    "connection-failed",
+    "connection failed",
+    "timed-out",
+    "timeout",
+)
+
 
 def translate_queue_status(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     queue_name = str(snapshot.get("name") or "")
@@ -35,7 +46,12 @@ def translate_queue_status(snapshot: Mapping[str, Any]) -> dict[str, Any]:
 
     state_code = _as_int(attributes.get("printer-state"))
     accepting_jobs = _as_bool(attributes.get("printer-is-accepting-jobs"))
-    state = CUPS_STATE_LABELS.get(state_code, "unknown")
+    reasons = _as_list(attributes.get("printer-state-reasons"))
+    state = (
+        "offline"
+        if _has_offline_reason(reasons)
+        else CUPS_STATE_LABELS.get(state_code, "unknown")
+    )
 
     return {
         "queue_name": queue_name,
@@ -47,7 +63,7 @@ def translate_queue_status(snapshot: Mapping[str, Any]) -> dict[str, Any]:
         "message": str(attributes.get("printer-state-message") or ""),
         "device_uri": attributes.get("device-uri"),
         "location": attributes.get("printer-location"),
-        "reasons": _as_list(attributes.get("printer-state-reasons")),
+        "reasons": reasons,
     }
 
 
@@ -64,6 +80,17 @@ def translate_error_status(queue_name: str, error: str) -> dict[str, Any]:
         "location": None,
         "reasons": [],
     }
+
+
+def _has_offline_reason(reasons: list[str]) -> bool:
+    normalized_reasons = [
+        reason.strip().lower().replace("_", "-") for reason in reasons
+    ]
+    return any(
+        token in reason
+        for reason in normalized_reasons
+        for token in OFFLINE_REASON_TOKENS
+    )
 
 
 def _as_int(value: Any) -> int | None:
