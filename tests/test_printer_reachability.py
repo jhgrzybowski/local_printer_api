@@ -58,3 +58,47 @@ def test_probe_reports_unreachable(monkeypatch) -> None:
         "reachable": False,
         "error": "timed out",
     }
+
+
+def test_probe_reports_invalid_device_uri_port_without_connecting(monkeypatch) -> None:
+    calls: list[tuple[tuple[str, int], float | None]] = []
+
+    def fake_create_connection(
+        address: tuple[str, int],
+        timeout: float | None = None,
+    ) -> DummyConnection:
+        calls.append((address, timeout))
+        return DummyConnection()
+
+    monkeypatch.setattr(socket, "create_connection", fake_create_connection)
+
+    result = probe_printer_reachability("ipp://printer.local:bad/ipp/print")
+
+    assert calls == []
+    assert result["checked"] is True
+    assert result["host"] == "printer.local"
+    assert result["port"] is None
+    assert result["reachable"] is False
+    assert "Invalid printer device URI port" in str(result["error"])
+
+
+def test_probe_reports_out_of_range_device_uri_port_without_connecting(monkeypatch) -> None:
+    calls: list[tuple[tuple[str, int], float | None]] = []
+
+    def fake_create_connection(
+        address: tuple[str, int],
+        timeout: float | None = None,
+    ) -> DummyConnection:
+        calls.append((address, timeout))
+        return DummyConnection()
+
+    monkeypatch.setattr(socket, "create_connection", fake_create_connection)
+
+    result = probe_printer_reachability("ipp://printer.local:99999/ipp/print")
+
+    assert calls == []
+    assert result["checked"] is True
+    assert result["host"] == "printer.local"
+    assert result["port"] is None
+    assert result["reachable"] is False
+    assert "Invalid printer device URI port" in str(result["error"])
