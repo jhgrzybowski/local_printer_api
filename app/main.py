@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +39,7 @@ from app.settings import (
 
 
 OPENAPI_YAML_PATH = Path(__file__).resolve().parent.parent / "openapi.yaml"
+LOGGER = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -200,18 +202,29 @@ def print_file(
         result = submit_print_job(client, storage, record, request.options)
     except PrintRequestError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
-    history_id = database.insert_print_history(
-        user_id=current_user.id,
-        file_id=record.file_id,
-        original_filename=record.original_filename,
-        detected_mime=record.detected_mime,
-        size_bytes=record.size_bytes,
-        page_count=record.page_count,
-        requested_options=request.options.model_dump(),
-        applied_options=result["applied_options"],
-        cups_job_id=int(result["job_id"]),
-        warnings=[str(warning) for warning in result["warnings"]],
-    )
+    try:
+        history_id = database.insert_print_history(
+            user_id=current_user.id,
+            file_id=record.file_id,
+            original_filename=record.original_filename,
+            detected_mime=record.detected_mime,
+            size_bytes=record.size_bytes,
+            page_count=record.page_count,
+            requested_options=request.options.model_dump(),
+            applied_options=result["applied_options"],
+            cups_job_id=int(result["job_id"]),
+            warnings=[str(warning) for warning in result["warnings"]],
+        )
+    except Exception:
+        LOGGER.exception(
+            "Failed to persist print history after submitting CUPS job %s",
+            result["job_id"],
+        )
+        history_id = None
+        result["warnings"] = [
+            *[str(warning) for warning in result["warnings"]],
+            "Print history could not be persisted; CUPS job was submitted",
+        ]
     result["history_id"] = history_id
     return result
 
@@ -271,8 +284,9 @@ def cancel_job(
     job_id: int,
     current_user: User = Depends(require_current_user),
     client: CupsClient = Depends(get_cups_client),
+    database: Database = Depends(get_database),
 ) -> dict[str, object]:
-    _ = current_user
+    require_user_cups_job(database, current_user, job_id)
     try:
         return client.cancel_job(job_id)
     except CupsClientError as exc:
@@ -284,8 +298,9 @@ def forget_job(
     job_id: int,
     current_user: User = Depends(require_current_user),
     client: CupsClient = Depends(get_cups_client),
+    database: Database = Depends(get_database),
 ) -> dict[str, object]:
-    _ = current_user
+    require_user_cups_job(database, current_user, job_id)
     try:
         result = client.forget_job(job_id)
     except CupsClientError as exc:
@@ -413,6 +428,11 @@ def get_user_file_record(
     if record is None or record.owner_user_id != current_user.id:
         raise HTTPException(status_code=404, detail="File not found")
     return record
+
+
+def require_user_cups_job(database: Database, current_user: User, job_id: int) -> None:
+    if not database.user_has_cups_job(current_user.id, job_id):
+        raise HTTPException(status_code=404, detail="Job not found")
 
 
 def parse_page_number(page: str) -> int:

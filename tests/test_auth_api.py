@@ -7,7 +7,7 @@ from typing import Any
 from fastapi.testclient import TestClient
 from pypdf import PdfWriter
 
-from app.main import app, get_cups_client, get_file_storage
+from app.main import app, get_cups_client, get_database, get_file_storage
 from app.services.auth import hash_token
 from app.services.database import Database
 from app.services.file_storage import TempFileStorage
@@ -37,6 +37,20 @@ class FakeCupsClient:
 
     def print_file(self, path: Path, title: str, options: dict[str, str]) -> int:
         return 321
+
+    def cancel_job(self, job_id: int) -> dict[str, Any]:
+        return {
+            "job_id": job_id,
+            "cancelled": True,
+            "already_terminal": False,
+            "can_forget": False,
+            "message": "Job cancellation was submitted.",
+        }
+
+
+class FailingHistoryDatabase(Database):
+    def insert_print_history(self, *args: Any, **kwargs: Any) -> int:
+        raise RuntimeError("database is locked")
 
 
 def make_pdf() -> bytes:
@@ -184,6 +198,34 @@ def test_print_history_is_created_and_user_scoped(tmp_path: Path) -> None:
     assert bob_entry.status_code == 404
 
 
+def test_print_still_returns_job_id_when_history_insert_fails(tmp_path: Path) -> None:
+    storage = TempFileStorage(tmp_path / "files", max_upload_mb=1)
+    failing_database = FailingHistoryDatabase(tmp_path / "failing-history.db")
+    app.dependency_overrides.clear()
+    app.dependency_overrides[get_file_storage] = lambda: storage
+    app.dependency_overrides[get_cups_client] = lambda: FakeCupsClient()
+    app.dependency_overrides[get_database] = lambda: failing_database
+
+    with TestClient(app) as client:
+        signup_user(client, username="alice")
+        upload = client.post(
+            "/files",
+            files={"file": ("history-fails.pdf", make_pdf(), "application/pdf")},
+        )
+        assert upload.status_code == 200
+        response = client.post(
+            "/print",
+            json={"file_id": upload.json()["file_id"], "options": {"paper_size": "A4"}},
+        )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 200
+    body = response.json()
+    assert body["job_id"] == 321
+    assert body["history_id"] is None
+    assert any("history could not be persisted" in warning.lower() for warning in body["warnings"])
+
+
 def test_uploaded_files_are_user_scoped_for_preview_and_print(tmp_path: Path) -> None:
     storage = TempFileStorage(tmp_path / "files", max_upload_mb=1)
     app.dependency_overrides.clear()
@@ -212,3 +254,34 @@ def test_uploaded_files_are_user_scoped_for_preview_and_print(tmp_path: Path) ->
     assert bob_preview.status_code == 404
     assert bob_print.status_code == 404
     assert alice_print.status_code == 200
+
+
+def test_cups_job_cancellation_requires_user_history(tmp_path: Path) -> None:
+    storage = TempFileStorage(tmp_path / "files", max_upload_mb=1)
+    app.dependency_overrides.clear()
+    app.dependency_overrides[get_file_storage] = lambda: storage
+    app.dependency_overrides[get_cups_client] = lambda: FakeCupsClient()
+
+    with TestClient(app) as alice, TestClient(app) as bob:
+        signup_user(alice, username="alice")
+        signup_user(bob, username="bob")
+
+        upload = alice.post(
+            "/files",
+            files={"file": ("owned-job.pdf", make_pdf(), "application/pdf")},
+        )
+        assert upload.status_code == 200
+        print_response = alice.post(
+            "/print",
+            json={"file_id": upload.json()["file_id"], "options": {}},
+        )
+        assert print_response.status_code == 200
+        job_id = print_response.json()["job_id"]
+
+        bob_cancel = bob.delete(f"/jobs/{job_id}")
+        alice_cancel = alice.delete(f"/jobs/{job_id}")
+
+    app.dependency_overrides.clear()
+    assert bob_cancel.status_code == 404
+    assert alice_cancel.status_code == 200
+    assert alice_cancel.json()["cancelled"] is True

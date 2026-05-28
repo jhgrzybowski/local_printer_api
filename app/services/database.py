@@ -306,6 +306,19 @@ class Database:
             ).fetchone()
         return history_from_row(row) if row is not None else None
 
+    def user_has_cups_job(self, user_id: int, cups_job_id: int) -> bool:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT 1
+                FROM print_history
+                WHERE user_id = ? AND cups_job_id = ?
+                LIMIT 1
+                """,
+                (user_id, cups_job_id),
+            ).fetchone()
+        return row is not None
+
 
 def user_from_row(row: sqlite3.Row) -> User:
     return User(

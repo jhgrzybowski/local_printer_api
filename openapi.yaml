@@ -421,6 +421,12 @@ paths:
                 $ref: "#/components/schemas/CancelJobResponse"
         "401":
           $ref: "#/components/responses/AuthenticationRequired"
+        "404":
+          description: CUPS job was not submitted by the current user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "503":
           description: CUPS unavailable
           content:
@@ -450,6 +456,12 @@ paths:
                 $ref: "#/components/schemas/ForgetJobResponse"
         "401":
           $ref: "#/components/responses/AuthenticationRequired"
+        "404":
+          description: CUPS job was not submitted by the current user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "409":
           description: CUPS did not allow the purge, or the job is still active
           content:
@@ -975,8 +987,12 @@ components:
         job_id:
           type: integer
         history_id:
-          type: integer
-          description: Per-user print history record created for this submission.
+          type:
+            - integer
+            - "null"
+          description: >
+            Per-user print history record created for this submission. Null
+            means CUPS accepted the job but the history write failed.
         queue:
           type: string
           example: Canon_MG5350
