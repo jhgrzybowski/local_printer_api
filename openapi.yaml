@@ -330,11 +330,13 @@ paths:
   /jobs:
     get:
       tags: [Jobs]
-      summary: List CUPS jobs for the configured queue
+      summary: List current user's CUPS jobs for the configured queue
       description: |
-        Lists jobs from CUPS. The default `active` scope returns only
+        Lists jobs from CUPS that match the current user's persisted or
+        transient print submissions. The default `active` scope returns only
         not-completed jobs so frontend queue/task views do not show historical
-        completed jobs as cancelable work.
+        completed jobs as cancelable work. Jobs submitted by other users are
+        filtered out before job metadata is returned.
       operationId: listJobs
       security:
         - SessionCookieAuth: []
@@ -372,7 +374,10 @@ paths:
   /jobs/{job_id}:
     get:
       tags: [Jobs]
-      summary: Get one CUPS job
+      summary: Get one current-user CUPS job
+      description: |
+        Returns CUPS job details only when the job matches the current user's
+        persisted or transient print submissions.
       operationId: getJob
       security:
         - SessionCookieAuth: []
@@ -388,7 +393,7 @@ paths:
         "401":
           $ref: "#/components/responses/AuthenticationRequired"
         "404":
-          description: Job not found
+          description: Job not found or not submitted by the current user
           content:
             application/json:
               schema:
@@ -1076,6 +1081,7 @@ components:
             $ref: "#/components/schemas/JobInfo"
         counts:
           type: object
+          description: Counts after filtering CUPS jobs to the current user.
           properties:
             active:
               type: integer

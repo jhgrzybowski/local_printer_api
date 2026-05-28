@@ -38,6 +38,36 @@ class FakeCupsClient:
     def print_file(self, path: Path, title: str, options: dict[str, str]) -> int:
         return 321
 
+    def list_jobs(self, scope: str = "active") -> list[dict[str, Any]]:
+        active_job = {
+            "job_id": 321,
+            "name": "alice-private.pdf",
+            "user": "alice",
+            "state": "processing",
+            "is_active": True,
+            "is_terminal": False,
+            "can_cancel": True,
+            "can_forget": False,
+        }
+        terminal_job = {
+            "job_id": 654,
+            "name": "other-history.pdf",
+            "user": "other",
+            "state": "completed",
+            "is_active": False,
+            "is_terminal": True,
+            "can_cancel": False,
+            "can_forget": True,
+        }
+        if scope == "active":
+            return [active_job]
+        if scope == "completed":
+            return [terminal_job]
+        return [active_job, terminal_job]
+
+    def get_job(self, job_id: int) -> dict[str, Any] | None:
+        return next((job for job in self.list_jobs("all") if job["job_id"] == job_id), None)
+
     def cancel_job(self, job_id: int) -> dict[str, Any]:
         return {
             "job_id": job_id,
@@ -217,6 +247,9 @@ def test_print_still_returns_job_id_when_history_insert_fails(tmp_path: Path) ->
             "/print",
             json={"file_id": upload.json()["file_id"], "options": {"paper_size": "A4"}},
         )
+        jobs = client.get("/jobs")
+        job = client.get("/jobs/321")
+        cancel = client.delete("/jobs/321")
 
     app.dependency_overrides.clear()
     assert response.status_code == 200
@@ -224,6 +257,10 @@ def test_print_still_returns_job_id_when_history_insert_fails(tmp_path: Path) ->
     assert body["job_id"] == 321
     assert body["history_id"] is None
     assert any("history could not be persisted" in warning.lower() for warning in body["warnings"])
+    assert jobs.status_code == 200
+    assert [job["job_id"] for job in jobs.json()["jobs"]] == [321]
+    assert job.status_code == 200
+    assert cancel.status_code == 200
 
 
 def test_uploaded_files_are_user_scoped_for_preview_and_print(tmp_path: Path) -> None:
@@ -285,3 +322,39 @@ def test_cups_job_cancellation_requires_user_history(tmp_path: Path) -> None:
     assert bob_cancel.status_code == 404
     assert alice_cancel.status_code == 200
     assert alice_cancel.json()["cancelled"] is True
+
+
+def test_cups_job_reads_are_scoped_to_user_history(tmp_path: Path) -> None:
+    storage = TempFileStorage(tmp_path / "files", max_upload_mb=1)
+    app.dependency_overrides.clear()
+    app.dependency_overrides[get_file_storage] = lambda: storage
+    app.dependency_overrides[get_cups_client] = lambda: FakeCupsClient()
+
+    with TestClient(app) as alice, TestClient(app) as bob:
+        signup_user(alice, username="alice")
+        signup_user(bob, username="bob")
+
+        upload = alice.post(
+            "/files",
+            files={"file": ("alice-job.pdf", make_pdf(), "application/pdf")},
+        )
+        assert upload.status_code == 200
+        print_response = alice.post(
+            "/print",
+            json={"file_id": upload.json()["file_id"], "options": {}},
+        )
+        assert print_response.status_code == 200
+        job_id = print_response.json()["job_id"]
+
+        alice_jobs = alice.get("/jobs")
+        bob_jobs = bob.get("/jobs")
+        alice_job = alice.get(f"/jobs/{job_id}")
+        bob_job = bob.get(f"/jobs/{job_id}")
+
+    app.dependency_overrides.clear()
+    assert [job["job_id"] for job in alice_jobs.json()["jobs"]] == [job_id]
+    assert alice_jobs.json()["counts"]["active"] == 1
+    assert bob_jobs.json()["jobs"] == []
+    assert bob_jobs.json()["counts"] == {"active": 0, "completed": 0, "all": 0}
+    assert alice_job.status_code == 200
+    assert bob_job.status_code == 404

@@ -319,6 +319,18 @@ class Database:
             ).fetchone()
         return row is not None
 
+    def list_user_cups_job_ids(self, user_id: int) -> set[int]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT DISTINCT cups_job_id
+                FROM print_history
+                WHERE user_id = ?
+                """,
+                (user_id,),
+            ).fetchall()
+        return {int(row["cups_job_id"]) for row in rows}
+
 
 def user_from_row(row: sqlite3.Row) -> User:
     return User(

@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Iterator
 
 import pytest
-from app.main import app
+from app.main import UNPERSISTED_JOB_OWNERS, app
 from app.services.database import Database
 
 
@@ -12,6 +12,8 @@ from app.services.database import Database
 def isolated_database(tmp_path: Path) -> Iterator[Database]:
     database = Database(tmp_path / "app.db")
     app.state.database = database
+    UNPERSISTED_JOB_OWNERS.clear()
     yield database
+    UNPERSISTED_JOB_OWNERS.clear()
     if hasattr(app.state, "database"):
         delattr(app.state, "database")

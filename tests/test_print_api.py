@@ -21,12 +21,14 @@ def storage(tmp_path: Path) -> TempFileStorage:
 
 
 @pytest.fixture
-def client(storage: TempFileStorage) -> TestClient:
+def client(storage: TempFileStorage, isolated_database: Database) -> TestClient:
     app.dependency_overrides.clear()
     app.dependency_overrides[get_file_storage] = lambda: storage
     app.dependency_overrides[get_cups_client] = lambda: FakeCupsClient()
     with TestClient(app) as test_client:
-        signup_user(test_client)
+        user = signup_user(test_client)
+        for job_id in (123, 456, 789):
+            grant_cups_job(isolated_database, job_id, user["user"]["id"])
         yield test_client
     app.dependency_overrides.clear()
 

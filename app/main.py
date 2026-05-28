@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 import logging
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 from fastapi import (
@@ -40,6 +41,8 @@ from app.settings import (
 
 OPENAPI_YAML_PATH = Path(__file__).resolve().parent.parent / "openapi.yaml"
 LOGGER = logging.getLogger(__name__)
+UNPERSISTED_JOB_LOCK = Lock()
+UNPERSISTED_JOB_OWNERS: dict[int, set[int]] = {}
 
 
 @asynccontextmanager
@@ -220,6 +223,7 @@ def print_file(
             "Failed to persist print history after submitting CUPS job %s",
             result["job_id"],
         )
+        remember_unpersisted_job(current_user.id, int(result["job_id"]))
         history_id = None
         result["warnings"] = [
             *[str(warning) for warning in result["warnings"]],
@@ -234,16 +238,17 @@ def list_jobs(
     scope: str = Query("active", description="Job scope: active, completed, or all"),
     current_user: User = Depends(require_current_user),
     client: CupsClient = Depends(get_cups_client),
+    database: Database = Depends(get_database),
 ) -> dict[str, object]:
-    _ = current_user
     if scope not in JOB_SCOPE_TO_CUPS:
         raise HTTPException(status_code=400, detail="Invalid job scope")
     try:
+        allowed_job_ids = get_user_cups_job_ids(database, current_user)
         return {
             "scope": scope,
             "queue": client.queue_name,
-            "jobs": client.list_jobs(scope),
-            "counts": client.job_counts(),
+            "jobs": filter_jobs_by_owner(client.list_jobs(scope), allowed_job_ids),
+            "counts": user_job_counts(client, allowed_job_ids),
         }
     except CupsClientError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -267,8 +272,9 @@ def get_job(
     job_id: int,
     current_user: User = Depends(require_current_user),
     client: CupsClient = Depends(get_cups_client),
+    database: Database = Depends(get_database),
 ) -> dict[str, object]:
-    _ = current_user
+    require_user_cups_job(database, current_user, job_id)
     try:
         job = client.get_job(job_id)
     except CupsClientError as exc:
@@ -431,8 +437,57 @@ def get_user_file_record(
 
 
 def require_user_cups_job(database: Database, current_user: User, job_id: int) -> None:
-    if not database.user_has_cups_job(current_user.id, job_id):
+    if job_id in get_unpersisted_jobs(current_user.id):
+        return
+    try:
+        owns_job = database.user_has_cups_job(current_user.id, job_id)
+    except Exception as exc:
+        LOGGER.warning(
+            "Failed to check persisted CUPS job ownership for user %s job %s: %s",
+            current_user.id,
+            job_id,
+            exc,
+        )
+        owns_job = False
+    if not owns_job:
         raise HTTPException(status_code=404, detail="Job not found")
+
+
+def get_user_cups_job_ids(database: Database, current_user: User) -> set[int]:
+    try:
+        persisted_job_ids = database.list_user_cups_job_ids(current_user.id)
+    except Exception as exc:
+        LOGGER.warning(
+            "Failed to list persisted CUPS job ownership for user %s: %s",
+            current_user.id,
+            exc,
+        )
+        persisted_job_ids = set()
+    return persisted_job_ids | get_unpersisted_jobs(current_user.id)
+
+
+def filter_jobs_by_owner(
+    jobs: list[dict[str, Any]],
+    allowed_job_ids: set[int],
+) -> list[dict[str, Any]]:
+    return [job for job in jobs if int(job.get("job_id", -1)) in allowed_job_ids]
+
+
+def user_job_counts(client: CupsClient, allowed_job_ids: set[int]) -> dict[str, int]:
+    return {
+        scope: len(filter_jobs_by_owner(client.list_jobs(scope), allowed_job_ids))
+        for scope in JOB_SCOPE_TO_CUPS
+    }
+
+
+def remember_unpersisted_job(user_id: int, job_id: int) -> None:
+    with UNPERSISTED_JOB_LOCK:
+        UNPERSISTED_JOB_OWNERS.setdefault(user_id, set()).add(job_id)
+
+
+def get_unpersisted_jobs(user_id: int) -> set[int]:
+    with UNPERSISTED_JOB_LOCK:
+        return set(UNPERSISTED_JOB_OWNERS.get(user_id, set()))
 
 
 def parse_page_number(page: str) -> int:
