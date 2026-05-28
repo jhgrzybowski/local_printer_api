@@ -40,13 +40,14 @@ DEFAULT_CORS_ALLOWED_ORIGINS = (
     "http://drukarka.local",
     "https://drukarka.local:443",
     "https://drukarka.local",
-    # Localhost dev origins (for local development and testing)
-    "http://localhost:5173",
-    "http://localhost:5174",
-    "http://localhost:5175",
-    "http://127.0.0.1:5173",
-    "http://127.0.0.1:5174",
-    "http://127.0.0.1:5175",
+    # NOTE: localhost/127.0.0.1 origins are intentionally omitted.
+    # The session cookie uses SameSite=Lax; on plain HTTP a browser treats
+    # localhost:5173 → 192.168.100.99:8000 as cross-site and will not attach
+    # the cookie to XHR/fetch requests.  CORS preflight succeeds but every
+    # auth-protected endpoint returns 401.  Developers must access the Vite
+    # dev server via the LAN IP (e.g. http://192.168.100.99:5173) so that
+    # both the frontend and the API share the same registered host and the
+    # cookie is sent same-site.  See ENVIRONMENT.md for details.
 )
 
 
@@ -72,7 +73,7 @@ PRINTER_IP = os.getenv("PRINTER_IP", "192.168.100.100")
 BACKEND_HOST = os.getenv("BACKEND_HOST", "192.168.100.99")
 BACKEND_PORT = _env_int("BACKEND_PORT", 8000)
 TMP_DIR = os.getenv("TMP_DIR", "/var/tmp/printer-backend")
-DB_PATH = os.getenv("DB_PATH", "/var/lib/local-printer-api/app.db")
+DB_PATH = os.getenv("DB_PATH", "/var/tmp/printer-backend/app.db")
 MAX_UPLOAD_MB = _env_int("MAX_UPLOAD_MB", 50)
 PREVIEW_DPI = _env_int("PREVIEW_DPI", 110)
 CORS_ALLOWED_ORIGINS = _env_csv("CORS_ALLOWED_ORIGINS", DEFAULT_CORS_ALLOWED_ORIGINS)
