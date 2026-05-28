@@ -11,6 +11,7 @@ from pypdf import PdfWriter
 from app.main import app, get_cups_client, get_file_storage
 from app.services.cups_client import CupsClientError, normalize_job
 from app.services.file_storage import TempFileStorage
+from tests.helpers import signup_user
 
 
 @pytest.fixture
@@ -24,6 +25,7 @@ def client(storage: TempFileStorage) -> TestClient:
     app.dependency_overrides[get_file_storage] = lambda: storage
     app.dependency_overrides[get_cups_client] = lambda: FakeCupsClient()
     with TestClient(app) as test_client:
+        signup_user(test_client)
         yield test_client
     app.dependency_overrides.clear()
 
@@ -236,6 +238,7 @@ def test_print_reports_cups_unavailable(storage: TempFileStorage) -> None:
     app.dependency_overrides[get_file_storage] = lambda: storage
     app.dependency_overrides[get_cups_client] = lambda: FailingCupsClient()
     with TestClient(app) as client:
+        signup_user(client)
         file_id = upload_pdf(client)
         response = client.post("/print", json={"file_id": file_id, "options": {}})
 
@@ -249,6 +252,7 @@ def test_print_reports_queue_missing(storage: TempFileStorage) -> None:
     app.dependency_overrides[get_file_storage] = lambda: storage
     app.dependency_overrides[get_cups_client] = lambda: FakeCupsClient(missing_queue())
     with TestClient(app) as client:
+        signup_user(client)
         file_id = upload_pdf(client)
         response = client.post("/print", json={"file_id": file_id, "options": {}})
 
@@ -262,6 +266,7 @@ def test_print_reports_queue_stopped(storage: TempFileStorage) -> None:
     app.dependency_overrides[get_file_storage] = lambda: storage
     app.dependency_overrides[get_cups_client] = lambda: FakeCupsClient(stopped_queue())
     with TestClient(app) as client:
+        signup_user(client)
         file_id = upload_pdf(client)
         response = client.post("/print", json={"file_id": file_id, "options": {}})
 

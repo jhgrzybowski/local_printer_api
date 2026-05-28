@@ -10,11 +10,14 @@ The app exposes a REST API for:
 - submitting conservative print jobs,
 - inspecting CUPS jobs,
 - cancelling CUPS jobs,
-- discovering printer options for a future frontend.
+- discovering printer options for a future frontend,
+- LAN user signup/login with HttpOnly cookie sessions,
+- persisting per-user preferences and print history.
 
 The backend is designed as a thin orchestration layer over Linux CUPS. CUPS remains the source of truth for printer queues, printer capabilities, and print jobs.
 
-This project currently focuses on the backend only. Frontend, authentication, persistent job history, and multi-user management are outside v1 scope.
+This project currently focuses on the backend API. Frontend login and account UI
+are planned for the next milestone.
 
 ---
 
@@ -37,6 +40,7 @@ Current backend capabilities:
 - Print submission through CUPS.
 - CUPS job listing, details, and cancellation.
 - Frontend-friendly `/options` endpoint based on detected CUPS/PPD capabilities.
+- SQLite-backed user accounts, sessions, print preferences, and print history.
 - Diagnostic and setup scripts.
 
 ---
@@ -145,9 +149,10 @@ curl -s "$PRINTER_BACKEND/options"
 
 The default compose setup mounts the host CUPS socket at
 `/run/cups/cups.sock`, exposes `${BACKEND_HOST:-192.168.100.99}:8000:8000`,
-and persists upload/preview files in a Docker volume at
-`/var/tmp/printer-backend` inside the container. Override `BACKEND_HOST` when
-testing on a different host IP, for example
+persists upload/preview files in a Docker volume at `/var/tmp/printer-backend`,
+and persists SQLite data in a Docker volume at
+`/var/lib/local-printer-api/app.db` inside the container. Override `BACKEND_HOST`
+when testing on a different host IP, for example
 `BACKEND_HOST=127.0.0.1 docker compose up -d --build` for local-only review.
 
 Browser frontends must be listed in `CORS_ALLOWED_ORIGINS`. The default Docker
@@ -192,7 +197,15 @@ curl -s "$PRINTER_BACKEND/options?debug=true" | jq
 ### Upload a file
 
 ```bash
-curl -s -X POST "$PRINTER_BACKEND/files" \
+curl -c cookies.txt -s -X POST "$PRINTER_BACKEND/auth/signup" \
+  -H "Content-Type: application/json" \
+  -d '{"username":"alice","password":"correct horse battery staple"}' | jq
+```
+
+Protected endpoints use the session cookie returned by signup/login.
+
+```bash
+curl -b cookies.txt -s -X POST "$PRINTER_BACKEND/files" \
   -F "file=@test.pdf;type=application/pdf" | jq
 ```
 
@@ -205,19 +218,19 @@ export FILE_ID="replace-with-uploaded-file-id"
 ### Generate/read preview
 
 ```bash
-curl -s "$PRINTER_BACKEND/files/$FILE_ID/preview" | jq
+curl -b cookies.txt -s "$PRINTER_BACKEND/files/$FILE_ID/preview" | jq
 ```
 
 Download page 1 preview:
 
 ```bash
-curl -o preview-page-1.png "$PRINTER_BACKEND/files/$FILE_ID/preview/1"
+curl -b cookies.txt -o preview-page-1.png "$PRINTER_BACKEND/files/$FILE_ID/preview/1"
 ```
 
 ### Print one page safely
 
 ```bash
-curl -s -X POST "$PRINTER_BACKEND/print" \
+curl -b cookies.txt -s -X POST "$PRINTER_BACKEND/print" \
   -H "Content-Type: application/json" \
   -d '{
     "file_id": "'"$FILE_ID"'",
@@ -236,15 +249,26 @@ curl -s -X POST "$PRINTER_BACKEND/print" \
   }' | jq
 ```
 
+### Preferences and history
+
+```bash
+curl -b cookies.txt -s -X PUT "$PRINTER_BACKEND/me/preferences" \
+  -H "Content-Type: application/json" \
+  -d '{"paper_size":"A4","duplex":"none","color_mode":"monochrome"}' | jq
+
+curl -b cookies.txt -s "$PRINTER_BACKEND/me/preferences" | jq
+curl -b cookies.txt -s "$PRINTER_BACKEND/history" | jq
+```
+
 ### Jobs
 
 ```bash
-curl -s "$PRINTER_BACKEND/jobs" | jq
-curl -s "$PRINTER_BACKEND/jobs?scope=completed" | jq
-curl -s "$PRINTER_BACKEND/jobs?scope=all" | jq
-curl -s "$PRINTER_BACKEND/jobs/2" | jq
-curl -s -X DELETE "$PRINTER_BACKEND/jobs/2" | jq
-curl -s -X POST "$PRINTER_BACKEND/jobs/2/forget" | jq
+curl -b cookies.txt -s "$PRINTER_BACKEND/jobs" | jq
+curl -b cookies.txt -s "$PRINTER_BACKEND/jobs?scope=completed" | jq
+curl -b cookies.txt -s "$PRINTER_BACKEND/jobs?scope=all" | jq
+curl -b cookies.txt -s "$PRINTER_BACKEND/jobs/2" | jq
+curl -b cookies.txt -s -X DELETE "$PRINTER_BACKEND/jobs/2" | jq
+curl -b cookies.txt -s -X POST "$PRINTER_BACKEND/jobs/2/forget" | jq
 ```
 
 `GET /jobs` defaults to active CUPS jobs only. Historical completed, canceled,

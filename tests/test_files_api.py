@@ -9,6 +9,7 @@ from pypdf import PdfWriter
 
 from app.main import app, get_file_storage
 from app.services.file_storage import TempFileStorage, sanitize_filename
+from tests.helpers import signup_user
 
 
 @pytest.fixture
@@ -17,6 +18,7 @@ def file_client(tmp_path: Path) -> TestClient:
     app.dependency_overrides.clear()
     app.dependency_overrides[get_file_storage] = lambda: storage
     with TestClient(app) as client:
+        signup_user(client)
         yield client
     app.dependency_overrides.clear()
 

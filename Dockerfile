@@ -25,7 +25,7 @@ RUN pip install --no-cache-dir --upgrade pip \
 COPY app ./app
 COPY openapi.yaml ./
 
-RUN mkdir -p /var/tmp/printer-backend
+RUN mkdir -p /var/tmp/printer-backend /var/lib/local-printer-api
 
 EXPOSE 8000
 

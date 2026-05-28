@@ -19,6 +19,11 @@ DEFAULT_CORS_ALLOWED_ORIGINS = (
     "http://192.168.100.99:8000",
     "http://ubuntu26-remote.local:8000",
     "http://drukarka.local:8000",
+    # Production app origins served through the frontend reverse proxy
+    "http://192.168.100.99",
+    "http://192.168.100.99:80",
+    "http://ubuntu26-remote.local",
+    "http://ubuntu26-remote.local:80",
     # Dev ports (Vite)
     "http://192.168.100.99:5173",
     "http://192.168.100.99:5174",
@@ -67,6 +72,15 @@ PRINTER_IP = os.getenv("PRINTER_IP", "192.168.100.100")
 BACKEND_HOST = os.getenv("BACKEND_HOST", "192.168.100.99")
 BACKEND_PORT = _env_int("BACKEND_PORT", 8000)
 TMP_DIR = os.getenv("TMP_DIR", "/var/tmp/printer-backend")
+DB_PATH = os.getenv("DB_PATH", "/var/lib/local-printer-api/app.db")
 MAX_UPLOAD_MB = _env_int("MAX_UPLOAD_MB", 50)
 PREVIEW_DPI = _env_int("PREVIEW_DPI", 110)
 CORS_ALLOWED_ORIGINS = _env_csv("CORS_ALLOWED_ORIGINS", DEFAULT_CORS_ALLOWED_ORIGINS)
+SESSION_COOKIE_NAME = os.getenv("SESSION_COOKIE_NAME", "local_printer_session")
+SESSION_TTL_DAYS = _env_int("SESSION_TTL_DAYS", 30)
+SESSION_COOKIE_SECURE = os.getenv("SESSION_COOKIE_SECURE", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}

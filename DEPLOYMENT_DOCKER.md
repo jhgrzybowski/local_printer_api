@@ -104,6 +104,8 @@ The compose file:
 - mounts the host CUPS socket,
 - stores uploads, filtered PDFs, and previews in the `printer-backend-tmp` named
   volume,
+- stores SQLite users, sessions, preferences, and print history in the
+  `printer-backend-db` named volume at `/var/lib/local-printer-api/app.db`,
 - sets explicit environment variables for the printer queue, host metadata,
   temporary directory, upload limit, and preview DPI.
 
@@ -115,9 +117,10 @@ PRINTER_IP=192.168.100.100
 BACKEND_HOST=192.168.100.99
 BACKEND_PORT=8000
 TMP_DIR=/var/tmp/printer-backend
+DB_PATH=/var/lib/local-printer-api/app.db
 MAX_UPLOAD_MB=50
 PREVIEW_DPI=110
-CORS_ALLOWED_ORIGINS=http://192.168.100.99:5173,http://ubuntu26-remote.local:5173,http://localhost:5173,http://127.0.0.1:5173
+CORS_ALLOWED_ORIGINS=http://192.168.100.99,http://192.168.100.99:80,http://ubuntu26-remote.local,http://ubuntu26-remote.local:80,http://drukarka.local,http://drukarka.local:80,http://192.168.100.99:5173,http://ubuntu26-remote.local:5173,http://localhost:5173,http://127.0.0.1:5173
 ```
 
 Browser clients are allowed only when their exact origin is listed in
@@ -128,8 +131,9 @@ Bar frontend on the same Ubuntu server, set:
 VITE_PRINTER_API_BASE_URL=http://192.168.100.99:8000
 ```
 
-This service has no authentication in v1. Keep it reachable only on the trusted
-LAN address. Do not bind it to `0.0.0.0` or publish it to the internet.
+The service uses open LAN signup plus HttpOnly cookie sessions. Keep it
+reachable only on the trusted LAN address. Do not bind it to `0.0.0.0` or
+publish it to the internet.
 
 ---
 
@@ -142,7 +146,6 @@ export PRINTER_BACKEND="http://${BACKEND_HOST:-192.168.100.99}:8000"
 curl -i "$PRINTER_BACKEND/health"
 curl -s "$PRINTER_BACKEND/status"
 curl -s "$PRINTER_BACKEND/options"
-curl -s "$PRINTER_BACKEND/jobs"
 ```
 
 Verify CORS for the Print Bar frontend origin:
@@ -173,6 +176,18 @@ scripts/smoke_print_api.sh --dry-run
 
 That checks health, status, options, and upload without submitting a print job.
 Use `--print` only when you intentionally want a one-page test print.
+
+Protected endpoints require a session cookie:
+
+```bash
+curl -c cookies.txt -s -X POST "$PRINTER_BACKEND/auth/signup" \
+  -H "Content-Type: application/json" \
+  -d '{"username":"alice","password":"correct horse battery staple"}' | jq
+
+curl -b cookies.txt -s "$PRINTER_BACKEND/jobs" | jq
+curl -b cookies.txt -s "$PRINTER_BACKEND/me/preferences" | jq
+curl -b cookies.txt -s "$PRINTER_BACKEND/history" | jq
+```
 
 ---
 
