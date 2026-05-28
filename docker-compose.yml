@@ -17,7 +17,7 @@ services:
       PREVIEW_DPI: "110"
       CORS_ALLOWED_ORIGINS: http://192.168.100.99:5173,http://ubuntu26-remote.local:5173,http://localhost:5173,http://127.0.0.1:5173
     volumes:
-      - /run/cups/cups.sock:/run/cups/cups.sock
+      - /run/cups:/run/cups
       - printer-backend-tmp:/var/tmp/printer-backend
 
 volumes:
