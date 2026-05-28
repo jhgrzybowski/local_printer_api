@@ -194,9 +194,7 @@ def print_file(
     storage: TempFileStorage = Depends(get_file_storage),
     database: Database = Depends(get_database),
 ) -> dict[str, object]:
-    record = storage.get_record(request.file_id)
-    if record is None:
-        raise HTTPException(status_code=404, detail="File not found")
+    record = get_user_file_record(storage, request.file_id, current_user)
 
     try:
         result = submit_print_job(client, storage, record, request.options)
@@ -304,9 +302,8 @@ async def upload_file(
     current_user: User = Depends(require_current_user),
     storage: TempFileStorage = Depends(get_file_storage),
 ) -> dict[str, object]:
-    _ = current_user
     try:
-        record = await storage.save_upload(file)
+        record = await storage.save_upload(file, owner_user_id=current_user.id)
     except StorageError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
     return file_response(record)
@@ -318,10 +315,7 @@ def list_previews(
     current_user: User = Depends(require_current_user),
     storage: TempFileStorage = Depends(get_file_storage),
 ) -> dict[str, object]:
-    _ = current_user
-    record = storage.get_record(file_id)
-    if record is None:
-        raise HTTPException(status_code=404, detail="File not found")
+    record = get_user_file_record(storage, file_id, current_user)
 
     preview_service = PreviewService(storage)
     try:
@@ -350,10 +344,7 @@ def get_preview_page(
     current_user: User = Depends(require_current_user),
     storage: TempFileStorage = Depends(get_file_storage),
 ) -> FileResponse:
-    _ = current_user
-    record = storage.get_record(file_id)
-    if record is None:
-        raise HTTPException(status_code=404, detail="File not found")
+    record = get_user_file_record(storage, file_id, current_user)
 
     preview_service = PreviewService(storage)
     try:
@@ -411,6 +402,17 @@ def file_response(record: StoredFile) -> dict[str, object]:
         "page_count": record.page_count,
         "preview_available": record.preview_available,
     }
+
+
+def get_user_file_record(
+    storage: TempFileStorage,
+    file_id: str,
+    current_user: User,
+) -> StoredFile:
+    record = storage.get_record(file_id)
+    if record is None or record.owner_user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="File not found")
+    return record
 
 
 def parse_page_number(page: str) -> int:

@@ -182,3 +182,33 @@ def test_print_history_is_created_and_user_scoped(tmp_path: Path) -> None:
     assert alice_entry.json()["original_filename"] == "history.pdf"
     assert bob_history.json()["history"] == []
     assert bob_entry.status_code == 404
+
+
+def test_uploaded_files_are_user_scoped_for_preview_and_print(tmp_path: Path) -> None:
+    storage = TempFileStorage(tmp_path / "files", max_upload_mb=1)
+    app.dependency_overrides.clear()
+    app.dependency_overrides[get_file_storage] = lambda: storage
+    app.dependency_overrides[get_cups_client] = lambda: FakeCupsClient()
+
+    with TestClient(app) as alice, TestClient(app) as bob:
+        alice_user = signup_user(alice, username="alice")["user"]
+        signup_user(bob, username="bob")
+
+        upload = alice.post(
+            "/files",
+            files={"file": ("owned.pdf", make_pdf(), "application/pdf")},
+        )
+        assert upload.status_code == 200
+        file_id = upload.json()["file_id"]
+
+        bob_preview = bob.get(f"/files/{file_id}/preview")
+        bob_print = bob.post("/print", json={"file_id": file_id, "options": {}})
+        alice_print = alice.post("/print", json={"file_id": file_id, "options": {}})
+
+    app.dependency_overrides.clear()
+    stored_record = storage.get_record(file_id)
+    assert stored_record is not None
+    assert stored_record.owner_user_id == alice_user["id"]
+    assert bob_preview.status_code == 404
+    assert bob_print.status_code == 404
+    assert alice_print.status_code == 200

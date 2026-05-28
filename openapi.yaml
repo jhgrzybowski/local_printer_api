@@ -2,586 +2,1198 @@ openapi: 3.1.0
 info:
   title: Local Printer API
   version: 0.1.0
+  description: >
+    REST API for managing uploads, previews, print submission, printer status,
+    printer options, and CUPS jobs through a local CUPS queue.
+
+servers:
+  - url: http://192.168.100.99:8000
+    description: Backend IP on LAN
+  - url: http://ubuntu26-remote.local:8000
+    description: Example LAN server hostname
+  - url: http://drukarka.local:8000
+    description: Alternative LAN server hostname
+
+tags:
+  - name: Health
+  - name: Auth
+  - name: Printer
+  - name: Files
+  - name: Print
+  - name: Jobs
+  - name: Preferences
+  - name: History
+
 paths:
   /health:
     get:
-      summary: Health
-      operationId: health_health_get
+      tags: [Health]
+      summary: Backend health check
+      operationId: getHealth
       responses:
-        '200':
-          description: Successful Response
+        "200":
+          description: Backend is alive
           content:
             application/json:
               schema:
-                additionalProperties:
-                  type: string
-                type: object
-                title: Response Health Health Get
+                $ref: "#/components/schemas/HealthResponse"
+
   /auth/signup:
     post:
-      summary: Signup
-      operationId: signup_auth_signup_post
+      tags: [Auth]
+      summary: Create a local user account and session
+      description: |
+        Creates a LAN-local account, starts a session, and sets the
+        `local_printer_session` HttpOnly cookie used by protected endpoints.
+      operationId: signup
       requestBody:
+        required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SignupRequest'
-        required: true
+              $ref: "#/components/schemas/SignupRequest"
       responses:
-        '200':
-          description: Successful Response
+        "200":
+          description: Account created and session cookie set
           content:
             application/json:
               schema:
-                additionalProperties: true
-                type: object
-                title: Response Signup Auth Signup Post
-        '422':
-          description: Validation Error
+                $ref: "#/components/schemas/AuthResponse"
+        "400":
+          description: Invalid username or password
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HTTPValidationError'
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Username already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /auth/login:
     post:
-      summary: Login
-      operationId: login_auth_login_post
+      tags: [Auth]
+      summary: Start a session for an existing user
+      description: |
+        Validates credentials, starts a session, and sets the
+        `local_printer_session` HttpOnly cookie used by protected endpoints.
+      operationId: login
       requestBody:
+        required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/LoginRequest'
-        required: true
+              $ref: "#/components/schemas/LoginRequest"
       responses:
-        '200':
-          description: Successful Response
+        "200":
+          description: Session cookie set
           content:
             application/json:
               schema:
-                additionalProperties: true
-                type: object
-                title: Response Login Auth Login Post
-        '422':
-          description: Validation Error
+                $ref: "#/components/schemas/AuthResponse"
+        "401":
+          description: Invalid username or password
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HTTPValidationError'
+                $ref: "#/components/schemas/ErrorResponse"
+
   /auth/logout:
     post:
-      summary: Logout
-      operationId: logout_auth_logout_post
+      tags: [Auth]
+      summary: End the current session if one exists
+      operationId: logout
       responses:
-        '200':
-          description: Successful Response
+        "200":
+          description: Session cookie cleared
           content:
             application/json:
               schema:
-                additionalProperties:
-                  type: boolean
-                type: object
-                title: Response Logout Auth Logout Post
+                $ref: "#/components/schemas/LogoutResponse"
+
   /auth/me:
     get:
-      summary: Me
-      operationId: me_auth_me_get
+      tags: [Auth]
+      summary: Get the current authenticated user
+      operationId: getCurrentUser
+      security:
+        - SessionCookieAuth: []
       responses:
-        '200':
-          description: Successful Response
+        "200":
+          description: Current user
           content:
             application/json:
               schema:
-                additionalProperties: true
-                type: object
-                title: Response Me Auth Me Get
+                $ref: "#/components/schemas/MeResponse"
+        "401":
+          $ref: "#/components/responses/AuthenticationRequired"
+
   /status:
     get:
-      summary: Status
-      operationId: status_status_get
+      tags: [Printer]
+      summary: Get normalized printer/CUPS queue status
+      operationId: getStatus
       responses:
-        '200':
-          description: Successful Response
+        "200":
+          description: Current printer queue status
           content:
             application/json:
               schema:
-                additionalProperties: true
-                type: object
-                title: Response Status Status Get
-  /print:
-    post:
-      summary: Print File
-      operationId: print_file_print_post
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/PrintRequest'
-        required: true
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                additionalProperties: true
-                type: object
-                title: Response Print File Print Post
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /jobs:
-    get:
-      summary: List Jobs
-      operationId: list_jobs_jobs_get
-      parameters:
-      - name: scope
-        in: query
-        required: false
-        schema:
-          type: string
-          description: 'Job scope: active, completed, or all'
-          default: active
-          title: Scope
-        description: 'Job scope: active, completed, or all'
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: true
-                title: Response List Jobs Jobs Get
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
+                $ref: "#/components/schemas/PrinterStatus"
+
   /options:
     get:
-      summary: Get Options
-      operationId: get_options_options_get
+      tags: [Printer]
+      summary: Get detected printer capabilities
+      operationId: getOptions
       parameters:
-      - name: debug
-        in: query
-        required: false
-        schema:
-          type: boolean
-          default: false
-          title: Debug
+        - name: debug
+          in: query
+          required: false
+          description: Include raw detected CUPS/PPD options when true.
+          schema:
+            type: boolean
+            default: false
       responses:
-        '200':
-          description: Successful Response
+        "200":
+          description: Frontend-friendly detected printer options
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
-                title: Response Get Options Options Get
-        '422':
-          description: Validation Error
+                $ref: "#/components/schemas/PrinterOptionsResponse"
+        "503":
+          description: CUPS unavailable or queue missing
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /jobs/{job_id}:
-    get:
-      summary: Get Job
-      operationId: get_job_jobs__job_id__get
-      parameters:
-      - name: job_id
-        in: path
-        required: true
-        schema:
-          type: integer
-          title: Job Id
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: true
-                title: Response Get Job Jobs  Job Id  Get
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-    delete:
-      summary: Cancel Job
-      operationId: cancel_job_jobs__job_id__delete
-      parameters:
-      - name: job_id
-        in: path
-        required: true
-        schema:
-          type: integer
-          title: Job Id
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: true
-                title: Response Cancel Job Jobs  Job Id  Delete
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /jobs/{job_id}/forget:
-    post:
-      summary: Forget Job
-      operationId: forget_job_jobs__job_id__forget_post
-      parameters:
-      - name: job_id
-        in: path
-        required: true
-        schema:
-          type: integer
-          title: Job Id
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: true
-                title: Response Forget Job Jobs  Job Id  Forget Post
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
+                $ref: "#/components/schemas/ErrorResponse"
+
   /files:
     post:
-      summary: Upload File
-      operationId: upload_file_files_post
+      tags: [Files]
+      summary: Upload a file for previewing or printing
+      operationId: uploadFile
+      security:
+        - SessionCookieAuth: []
       requestBody:
+        required: true
         content:
           multipart/form-data:
             schema:
-              $ref: '#/components/schemas/Body_upload_file_files_post'
-        required: true
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
       responses:
-        '200':
-          description: Successful Response
+        "200":
+          description: File accepted and stored
           content:
             application/json:
               schema:
-                additionalProperties: true
-                type: object
-                title: Response Upload File Files Post
-        '422':
-          description: Validation Error
+                $ref: "#/components/schemas/FileUploadResponse"
+        "401":
+          $ref: "#/components/responses/AuthenticationRequired"
+        "400":
+          description: Invalid or corrupt file
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HTTPValidationError'
+                $ref: "#/components/schemas/ErrorResponse"
+        "413":
+          description: File too large
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "415":
+          description: Unsupported media type
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /files/{file_id}/preview:
     get:
-      summary: List Previews
-      operationId: list_previews_files__file_id__preview_get
+      tags: [Files]
+      summary: Get preview metadata for an uploaded file
+      operationId: getFilePreview
+      security:
+        - SessionCookieAuth: []
       parameters:
-      - name: file_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: File Id
+        - $ref: "#/components/parameters/FileId"
       responses:
-        '200':
-          description: Successful Response
+        "200":
+          description: Preview metadata
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
-                title: Response List Previews Files  File Id  Preview Get
-        '422':
-          description: Validation Error
+                $ref: "#/components/schemas/PreviewResponse"
+        "401":
+          $ref: "#/components/responses/AuthenticationRequired"
+        "404":
+          description: Unknown file ID or file owned by another user
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HTTPValidationError'
+                $ref: "#/components/schemas/ErrorResponse"
+
   /files/{file_id}/preview/{page}:
     get:
-      summary: Get Preview Page
-      operationId: get_preview_page_files__file_id__preview__page__get
+      tags: [Files]
+      summary: Get one preview page as PNG
+      operationId: getPreviewPage
+      security:
+        - SessionCookieAuth: []
       parameters:
-      - name: file_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: File Id
-      - name: page
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Page
+        - $ref: "#/components/parameters/FileId"
+        - name: page
+          in: path
+          required: true
+          description: 1-based preview page number.
+          schema:
+            type: integer
+            minimum: 1
       responses:
-        '200':
-          description: Successful Response
+        "200":
+          description: Preview image
           content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
+            image/png:
+              schema:
+                type: string
+                format: binary
+        "401":
+          $ref: "#/components/responses/AuthenticationRequired"
+        "400":
+          description: Invalid page number
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /me/preferences:
-    get:
-      summary: Get Preferences
-      operationId: get_preferences_me_preferences_get
-      responses:
-        '200':
-          description: Successful Response
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Unknown file ID, file owned by another user, or preview page not found
           content:
             application/json:
               schema:
-                additionalProperties: true
-                type: object
-                title: Response Get Preferences Me Preferences Get
-    put:
-      summary: Put Preferences
-      operationId: put_preferences_me_preferences_put
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /print:
+    post:
+      tags: [Print]
+      summary: Submit an uploaded file to CUPS
+      operationId: submitPrintJob
+      security:
+        - SessionCookieAuth: []
       requestBody:
+        required: true
         content:
           application/json:
             schema:
-              additionalProperties: true
-              type: object
-              title: Preferences
-        required: true
+              $ref: "#/components/schemas/PrintRequest"
       responses:
-        '200':
-          description: Successful Response
+        "200":
+          description: Print job submitted
           content:
             application/json:
               schema:
-                additionalProperties: true
-                type: object
-                title: Response Put Preferences Me Preferences Put
-        '422':
-          description: Validation Error
+                $ref: "#/components/schemas/PrintResponse"
+        "401":
+          $ref: "#/components/responses/AuthenticationRequired"
+        "400":
+          description: Invalid print request or invalid page range
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HTTPValidationError'
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Unknown file ID or file owned by another user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Printer or queue state prevents printing
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: CUPS unavailable or printer queue unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /jobs:
+    get:
+      tags: [Jobs]
+      summary: List CUPS jobs for the configured queue
+      description: |
+        Lists jobs from CUPS. The default `active` scope returns only
+        not-completed jobs so frontend queue/task views do not show historical
+        completed jobs as cancelable work.
+      operationId: listJobs
+      security:
+        - SessionCookieAuth: []
+      parameters:
+        - name: scope
+          in: query
+          required: false
+          description: Which CUPS job set to return. Defaults to active.
+          schema:
+            type: string
+            enum: [active, completed, all]
+            default: active
+      responses:
+        "200":
+          description: Job list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobsResponse"
+        "401":
+          $ref: "#/components/responses/AuthenticationRequired"
+        "400":
+          description: Invalid job scope
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: CUPS unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /jobs/{job_id}:
+    get:
+      tags: [Jobs]
+      summary: Get one CUPS job
+      operationId: getJob
+      security:
+        - SessionCookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: Job details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobInfo"
+        "401":
+          $ref: "#/components/responses/AuthenticationRequired"
+        "404":
+          description: Job not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: CUPS unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    delete:
+      tags: [Jobs]
+      summary: Cancel an active CUPS job where possible
+      description: |
+        Cancels active jobs only. Historical terminal jobs are not retried as
+        failed cancellations; they return a domain response explaining that the
+        job is already terminal and can only be forgotten/purged if supported.
+      operationId: cancelJob
+      security:
+        - SessionCookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: Job cancelled, missing, or already terminal
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CancelJobResponse"
+        "401":
+          $ref: "#/components/responses/AuthenticationRequired"
+        "503":
+          description: CUPS unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /jobs/{job_id}/forget:
+    post:
+      tags: [Jobs]
+      summary: Purge one historical CUPS job record where supported
+      description: |
+        Attempts to remove a terminal historical job record from CUPS using
+        pycups `cancelJob(jobid, purge_job=True)`. Active jobs must be cancelled
+        first. This endpoint does not perform bulk purges.
+      operationId: forgetJob
+      security:
+        - SessionCookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: Historical job record purged
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ForgetJobResponse"
+        "401":
+          $ref: "#/components/responses/AuthenticationRequired"
+        "409":
+          description: CUPS did not allow the purge, or the job is still active
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: CUPS unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /me/preferences:
+    get:
+      tags: [Preferences]
+      summary: Get saved preferences for the current user
+      operationId: getPreferences
+      security:
+        - SessionCookieAuth: []
+      responses:
+        "200":
+          description: Current user preferences
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PreferencesResponse"
+        "401":
+          $ref: "#/components/responses/AuthenticationRequired"
+
+    put:
+      tags: [Preferences]
+      summary: Replace saved preferences for the current user
+      operationId: putPreferences
+      security:
+        - SessionCookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Preferences"
+      responses:
+        "200":
+          description: Saved user preferences
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PreferencesResponse"
+        "401":
+          $ref: "#/components/responses/AuthenticationRequired"
+
   /history:
     get:
-      summary: List History
-      operationId: list_history_history_get
+      tags: [History]
+      summary: List print history for the current user
+      operationId: listHistory
+      security:
+        - SessionCookieAuth: []
       responses:
-        '200':
-          description: Successful Response
+        "200":
+          description: Print history list
           content:
             application/json:
               schema:
-                additionalProperties: true
-                type: object
-                title: Response List History History Get
+                $ref: "#/components/schemas/HistoryListResponse"
+        "401":
+          $ref: "#/components/responses/AuthenticationRequired"
+
   /history/{history_id}:
     get:
-      summary: Get History Entry
-      operationId: get_history_entry_history__history_id__get
+      tags: [History]
+      summary: Get one print history entry for the current user
+      operationId: getHistoryEntry
+      security:
+        - SessionCookieAuth: []
       parameters:
-      - name: history_id
-        in: path
-        required: true
-        schema:
-          type: integer
-          title: History Id
+        - $ref: "#/components/parameters/HistoryId"
       responses:
-        '200':
-          description: Successful Response
+        "200":
+          description: Print history entry
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
-                title: Response Get History Entry History  History Id  Get
-        '422':
-          description: Validation Error
+                $ref: "#/components/schemas/PrintHistoryEntry"
+        "401":
+          $ref: "#/components/responses/AuthenticationRequired"
+        "404":
+          description: History entry not found for this user
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HTTPValidationError'
+                $ref: "#/components/schemas/ErrorResponse"
+
 components:
+  securitySchemes:
+    SessionCookieAuth:
+      type: apiKey
+      in: cookie
+      name: local_printer_session
+      description: HttpOnly session cookie set by signup/login.
+
+  responses:
+    AuthenticationRequired:
+      description: Authentication required
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+  parameters:
+    FileId:
+      name: file_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Internal uploaded file identifier.
+
+    JobId:
+      name: job_id
+      in: path
+      required: true
+      schema:
+        type: integer
+      description: CUPS job ID.
+
+    HistoryId:
+      name: history_id
+      in: path
+      required: true
+      schema:
+        type: integer
+      description: Per-user print history record ID.
+
   schemas:
-    Body_upload_file_files_post:
+    HealthResponse:
+      type: object
+      required: [status, service]
       properties:
-        file:
+        status:
           type: string
-          contentMediaType: application/octet-stream
-          title: File
+          example: ok
+        service:
+          type: string
+          example: canon-printer-manager
+
+    SignupRequest:
       type: object
-      required:
-      - file
-      title: Body_upload_file_files_post
-    HTTPValidationError:
-      properties:
-        detail:
-          items:
-            $ref: '#/components/schemas/ValidationError'
-          type: array
-          title: Detail
-      type: object
-      title: HTTPValidationError
-    LoginRequest:
+      required: [username, password]
       properties:
         username:
           type: string
-          title: Username
+          description: >
+            Desired username. Usernames are normalized to lowercase and must be
+            3-40 characters using letters, numbers, dot, underscore, or hyphen.
+          example: alice
         password:
           type: string
-          title: Password
+          format: password
+          minLength: 8
+        display_name:
+          type:
+            - string
+            - "null"
+          maxLength: 80
+          example: Alice
+
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+          description: Username is normalized to lowercase before lookup.
+          example: alice
+        password:
+          type: string
+          format: password
+
+    User:
+      type: object
+      required: [id, username, created_at, updated_at]
+      properties:
+        id:
+          type: integer
+        username:
+          type: string
+          example: alice
+        display_name:
+          type:
+            - string
+            - "null"
+          example: Alice
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    AuthSession:
+      type: object
+      required: [expires_at]
+      properties:
+        expires_at:
+          type: string
+          format: date-time
+
+    AuthResponse:
+      type: object
+      required: [user, session]
+      properties:
+        user:
+          $ref: "#/components/schemas/User"
+        session:
+          $ref: "#/components/schemas/AuthSession"
+
+    LogoutResponse:
+      type: object
+      required: [logged_out]
+      properties:
+        logged_out:
+          type: boolean
+          example: true
+
+    MeResponse:
+      type: object
+      required: [user]
+      properties:
+        user:
+          $ref: "#/components/schemas/User"
+
+    CupsStatus:
+      type: object
+      required: [available]
+      properties:
+        available:
+          type: boolean
+        error:
+          type:
+            - string
+            - "null"
+
+    PrinterNetworkStatus:
+      type: object
+      required: [checked, reachable]
+      properties:
+        checked:
+          type: boolean
+          description: Whether the backend attempted a direct printer network probe.
+        host:
+          type:
+            - string
+            - "null"
+          example: 192.168.100.100
+        port:
+          type:
+            - integer
+            - "null"
+          example: 515
+        reachable:
+          type:
+            - boolean
+            - "null"
+          description: Whether the configured printer endpoint accepted a TCP connection.
+        error:
+          type:
+            - string
+            - "null"
+
+    PrinterStatus:
       type: object
       required:
-      - username
-      - password
-      title: LoginRequest
-    PrintOptions:
+        - queue_name
+        - exists
+        - state
+        - enabled
+        - reasons
+        - cups
       properties:
-        copies:
-          type: integer
-          maximum: 99.0
-          minimum: 1.0
-          title: Copies
-          default: 1
-        pages:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Pages
-        paper_size:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Paper Size
-        orientation:
-          anyOf:
-          - type: string
-            enum:
-            - portrait
-            - landscape
-            - reverse-landscape
-            - reverse-portrait
-          - type: 'null'
-          title: Orientation
-        color_mode:
-          anyOf:
-          - type: string
-            enum:
-            - monochrome
-            - color
-            - auto
-          - type: 'null'
-          title: Color Mode
-        duplex:
-          anyOf:
-          - type: string
-            enum:
-            - none
-            - long-edge
-            - short-edge
-          - type: 'null'
-          title: Duplex
-        quality:
-          anyOf:
-          - type: string
-            enum:
-            - draft
-            - normal
-            - high
-          - type: 'null'
-          title: Quality
-        collate:
-          anyOf:
-          - type: boolean
-          - type: 'null'
-          title: Collate
-        media_type:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Media Type
-        fit_to_page:
-          anyOf:
-          - type: boolean
-          - type: 'null'
-          title: Fit To Page
-      additionalProperties: true
+        queue_name:
+          type: string
+          example: Canon_MG5350
+        exists:
+          type: boolean
+        state:
+          type: string
+          examples: [idle, processing, stopped, missing, offline]
+        state_code:
+          type:
+            - integer
+            - "null"
+          description: Raw CUPS printer-state code when available.
+        accepting_jobs:
+          type:
+            - boolean
+            - "null"
+        enabled:
+          type: boolean
+        message:
+          type: string
+        device_uri:
+          type:
+            - string
+            - "null"
+          example: lpd://192.168.100.100/PASSTHRU
+        location:
+          type:
+            - string
+            - "null"
+        reasons:
+          type: array
+          items:
+            type: string
+        cups:
+          $ref: "#/components/schemas/CupsStatus"
+        network:
+          $ref: "#/components/schemas/PrinterNetworkStatus"
+
+    OptionBlock:
       type: object
-      title: PrintOptions
-    PrintRequest:
+      required: [api_name, raw_option, supported, choices]
+      properties:
+        api_name:
+          type: string
+        raw_option:
+          type:
+            - string
+            - "null"
+        supported:
+          type: boolean
+        choices:
+          type: array
+          items:
+            type: string
+        mapping:
+          type: object
+          additionalProperties:
+            type: string
+        recommended_mapping:
+          type: object
+          additionalProperties:
+            type:
+              - string
+              - "null"
+        raw_options:
+          type: array
+          items:
+            type: string
+        notes:
+          type: string
+
+    PrinterOptionsResponse:
+      type: object
+      required:
+        - queue
+        - paper_sizes
+        - duplex_modes
+        - color_modes
+        - quality
+        - media_types
+        - collate
+        - fit_to_page
+        - orientation
+      properties:
+        queue:
+          type: string
+          example: Canon_MG5350
+        paper_sizes:
+          $ref: "#/components/schemas/OptionBlock"
+        duplex_modes:
+          $ref: "#/components/schemas/OptionBlock"
+        color_modes:
+          $ref: "#/components/schemas/OptionBlock"
+        quality:
+          $ref: "#/components/schemas/OptionBlock"
+        media_types:
+          $ref: "#/components/schemas/OptionBlock"
+        collate:
+          $ref: "#/components/schemas/OptionBlock"
+        fit_to_page:
+          $ref: "#/components/schemas/OptionBlock"
+        orientation:
+          $ref: "#/components/schemas/OptionBlock"
+        debug:
+          type: object
+          additionalProperties: true
+          description: Present only when debug=true.
+
+    FileUploadResponse:
+      type: object
+      required:
+        - file_id
+        - original_filename
+        - detected_mime
+        - size_bytes
+        - preview_available
       properties:
         file_id:
           type: string
-          title: File Id
-        options:
-          $ref: '#/components/schemas/PrintOptions'
-      type: object
-      required:
-      - file_id
-      title: PrintRequest
-    SignupRequest:
-      properties:
-        username:
+          example: uploaded-file-id
+        original_filename:
           type: string
-          title: Username
-        password:
+          example: test.pdf
+        detected_mime:
           type: string
-          title: Password
-        display_name:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Display Name
+          example: application/pdf
+        size_bytes:
+          type: integer
+          minimum: 0
+        page_count:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+        preview_available:
+          type: boolean
+
+    PreviewPage:
       type: object
-      required:
-      - username
-      - password
-      title: SignupRequest
-    ValidationError:
+      required: [page, url, size_bytes]
       properties:
-        loc:
-          items:
-            anyOf:
-            - type: string
-            - type: integer
+        page:
+          type: integer
+          minimum: 1
+        url:
+          type: string
+          example: /files/uploaded-file-id/preview/1
+        size_bytes:
+          type: integer
+          minimum: 0
+
+    PreviewResponse:
+      type: object
+      required: [file_id, page_count, pages]
+      properties:
+        file_id:
+          type: string
+        page_count:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+        pages:
           type: array
-          title: Location
-        msg:
+          items:
+            $ref: "#/components/schemas/PreviewPage"
+
+    PrintOptions:
+      type: object
+      additionalProperties: true
+      properties:
+        copies:
+          type: integer
+          minimum: 1
+          maximum: 99
+          default: 1
+        pages:
+          type:
+            - string
+            - "null"
+          description: Page range string, e.g. "1", "1,3-5,8".
+        paper_size:
+          type:
+            - string
+            - "null"
+          example: A4
+        orientation:
+          type:
+            - string
+            - "null"
+          enum: [portrait, landscape, reverse-landscape, reverse-portrait, null]
+        color_mode:
+          type:
+            - string
+            - "null"
+          enum: [monochrome, color, auto, null]
+        duplex:
+          type:
+            - string
+            - "null"
+          enum: [none, long-edge, short-edge, null]
+        quality:
+          type:
+            - string
+            - "null"
+          enum: [draft, normal, high, null]
+        collate:
+          type:
+            - boolean
+            - "null"
+        media_type:
+          type:
+            - string
+            - "null"
+          example: plain
+        fit_to_page:
+          type:
+            - boolean
+            - "null"
+
+    PrintRequest:
+      type: object
+      required: [file_id]
+      properties:
+        file_id:
           type: string
-          title: Message
-        type:
-          type: string
-          title: Error Type
-        input:
-          title: Input
-        ctx:
-          type: object
-          title: Context
+        options:
+          $ref: "#/components/schemas/PrintOptions"
+
+    PrintResponse:
       type: object
       required:
-      - loc
-      - msg
-      - type
-      title: ValidationError
+        - job_id
+        - history_id
+        - queue
+        - submitted_filename
+        - applied_options
+        - unsupported_options
+        - warnings
+      properties:
+        job_id:
+          type: integer
+        history_id:
+          type: integer
+          description: Per-user print history record created for this submission.
+        queue:
+          type: string
+          example: Canon_MG5350
+        submitted_filename:
+          type: string
+        applied_options:
+          type: object
+          additionalProperties:
+            type: string
+        unsupported_options:
+          type: array
+          items:
+            type: string
+        warnings:
+          type: array
+          items:
+            type: string
+
+    JobInfo:
+      type: object
+      required: [job_id]
+      properties:
+        job_id:
+          type: integer
+        queue:
+          type: string
+        name:
+          type: string
+        state:
+          type: string
+        state_code:
+          type:
+            - integer
+            - "null"
+        reasons:
+          type: array
+          items:
+            type: string
+        user:
+          type: string
+        printer_uri:
+          type: string
+        created_at:
+          oneOf:
+            - type: integer
+            - type: string
+            - type: "null"
+        completed_at:
+          oneOf:
+            - type: integer
+            - type: string
+            - type: "null"
+        is_active:
+          type: boolean
+          description: True for not-completed CUPS job states.
+        is_terminal:
+          type: boolean
+          description: True for canceled, aborted, or completed jobs.
+        can_cancel:
+          type: boolean
+          description: True when the API will attempt CUPS cancellation.
+        can_forget:
+          type: boolean
+          description: True when the job is terminal history eligible for purge attempts.
+        action_hint:
+          type: string
+          description: Frontend-safe explanation of allowed job actions.
+
+    JobsResponse:
+      type: object
+      required: [scope, queue, jobs]
+      properties:
+        scope:
+          type: string
+          enum: [active, completed, all]
+        queue:
+          type: string
+        jobs:
+          type: array
+          items:
+            $ref: "#/components/schemas/JobInfo"
+        counts:
+          type: object
+          properties:
+            active:
+              type: integer
+            completed:
+              type: integer
+            all:
+              type: integer
+
+    CancelJobResponse:
+      type: object
+      required: [job_id, cancelled]
+      properties:
+        job_id:
+          type: integer
+        cancelled:
+          type: boolean
+        already_terminal:
+          type: boolean
+          default: false
+        can_forget:
+          type: boolean
+          default: false
+        message:
+          type: string
+
+    ForgetJobResponse:
+      type: object
+      required: [job_id, forgotten, method]
+      properties:
+        job_id:
+          type: integer
+        forgotten:
+          type: boolean
+        method:
+          type: string
+          enum: [pycups-purge-job]
+        reason:
+          type: string
+
+    Preferences:
+      type: object
+      additionalProperties: true
+      description: >
+        Arbitrary JSON object persisted for the current user. The frontend can
+        store selected print defaults such as paper size, copies, color, duplex,
+        media type, and fit-to-page.
+      example:
+        paper_size: A4
+        copies: 2
+        color_mode: color
+        duplex: none
+
+    PreferencesResponse:
+      type: object
+      required: [preferences]
+      properties:
+        preferences:
+          $ref: "#/components/schemas/Preferences"
+
+    PrintHistoryEntry:
+      type: object
+      required:
+        - id
+        - file_id
+        - original_filename
+        - detected_mime
+        - size_bytes
+        - requested_options
+        - applied_options
+        - cups_job_id
+        - warnings
+        - status
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: integer
+        file_id:
+          type: string
+        original_filename:
+          type: string
+          example: test.pdf
+        detected_mime:
+          type: string
+          example: application/pdf
+        size_bytes:
+          type: integer
+          minimum: 0
+        page_count:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+        requested_options:
+          $ref: "#/components/schemas/PrintOptions"
+        applied_options:
+          type: object
+          additionalProperties:
+            type: string
+        cups_job_id:
+          type: integer
+        warnings:
+          type: array
+          items:
+            type: string
+        status:
+          type: string
+          example: submitted
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    HistoryListResponse:
+      type: object
+      required: [history]
+      properties:
+        history:
+          type: array
+          items:
+            $ref: "#/components/schemas/PrintHistoryEntry"
+
+    ErrorResponse:
+      type: object
+      required: [detail]
+      properties:
+        detail:
+          oneOf:
+            - type: string
+            - type: object
+              additionalProperties: true
+            - type: array
+              items:
+                type: object
+                additionalProperties: true
