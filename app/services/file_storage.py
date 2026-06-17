@@ -33,6 +33,7 @@ class StoredFile:
     size_bytes: int
     page_count: int | None
     preview_available: bool
+    owner_user_id: int | None = None
 
 
 class TempFileStorage:
@@ -48,7 +49,7 @@ class TempFileStorage:
         self.previews_dir = self.root / "previews"
         self.filtered_dir = self.root / "filtered"
 
-    async def save_upload(self, upload: UploadFile) -> StoredFile:
+    async def save_upload(self, upload: UploadFile, owner_user_id: int | None = None) -> StoredFile:
         self._ensure_dirs()
         file_id = self._new_file_id()
         original_filename = sanitize_filename(upload.filename)
@@ -98,6 +99,7 @@ class TempFileStorage:
             size_bytes=size_bytes,
             page_count=page_count,
             preview_available=preview_available,
+            owner_user_id=owner_user_id,
         )
         self.write_record(record)
         return record

@@ -1,31 +1,75 @@
+from contextlib import asynccontextmanager
+import logging
 from pathlib import Path
+from threading import Lock
+from typing import Any
 
-from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import (
+    Body,
+    Depends,
+    FastAPI,
+    File,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import FileResponse, HTMLResponse
+from pydantic import BaseModel
 
 from app.models.print_options import PrintRequest
 from app.services.cups_client import JOB_SCOPE_TO_CUPS, CupsClient, CupsClientError
+from app.services.auth import AuthError, AuthService, LoginSession, public_user
+from app.services.database import Database, User
 from app.services.file_storage import StoredFile, StorageError, TempFileStorage
 from app.services.options_summary import build_options_summary
 from app.services.preview import PreviewError, PreviewService
 from app.services.print_service import PrintRequestError, submit_print_job
 from app.services.status_translator import translate_error_status, translate_queue_status
-from app.settings import CORS_ALLOWED_ORIGINS, QUEUE_NAME
+from app.settings import (
+    CORS_ALLOWED_ORIGINS,
+    DB_PATH,
+    QUEUE_NAME,
+    SESSION_COOKIE_NAME,
+    SESSION_COOKIE_SECURE,
+    SESSION_TTL_DAYS,
+)
 
 
 OPENAPI_YAML_PATH = Path(__file__).resolve().parent.parent / "openapi.yaml"
+LOGGER = logging.getLogger(__name__)
+UNPERSISTED_JOB_LOCK = Lock()
+UNPERSISTED_JOB_OWNERS: dict[int, set[int]] = {}
 
 
-app = FastAPI(title="Local Printer API", docs_url=None)
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    get_database().delete_expired_sessions()
+    yield
+
+
+app = FastAPI(title="Local Printer API", docs_url=None, lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ALLOWED_ORIGINS,
-    allow_credentials=False,
-    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "Accept"],
 )
+
+
+class SignupRequest(BaseModel):
+    username: str
+    password: str
+    display_name: str | None = None
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
 
 
 @app.get("/openapi.yaml", include_in_schema=False)
@@ -56,6 +100,85 @@ def get_file_storage() -> TempFileStorage:
     return TempFileStorage()
 
 
+def get_database() -> Database:
+    database = getattr(app.state, "database", None)
+    if database is None:
+        database = Database(DB_PATH)
+        app.state.database = database
+    return database
+
+
+def get_auth_service(database: Database = Depends(get_database)) -> AuthService:
+    return AuthService(database)
+
+
+def require_current_user(
+    request: Request,
+    auth: AuthService = Depends(get_auth_service),
+) -> User:
+    user = auth.user_for_token(request.cookies.get(SESSION_COOKIE_NAME))
+    if user is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return user
+
+
+@app.post("/auth/signup")
+def signup(
+    payload: SignupRequest,
+    request: Request,
+    response: Response,
+    auth: AuthService = Depends(get_auth_service),
+) -> dict[str, object]:
+    try:
+        session = auth.signup(
+            username=payload.username,
+            password=payload.password,
+            display_name=payload.display_name,
+            user_agent=request.headers.get("user-agent"),
+            ip_address=client_ip(request),
+        )
+    except AuthError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    set_session_cookie(response, session)
+    return auth_response(session)
+
+
+@app.post("/auth/login")
+def login(
+    payload: LoginRequest,
+    request: Request,
+    response: Response,
+    auth: AuthService = Depends(get_auth_service),
+) -> dict[str, object]:
+    try:
+        session = auth.login(
+            username=payload.username,
+            password=payload.password,
+            user_agent=request.headers.get("user-agent"),
+            ip_address=client_ip(request),
+        )
+    except AuthError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    set_session_cookie(response, session)
+    return auth_response(session)
+
+
+@app.post("/auth/logout")
+def logout(
+    request: Request,
+    response: Response,
+    auth: AuthService = Depends(get_auth_service),
+) -> dict[str, bool]:
+    auth.logout(request.cookies.get(SESSION_COOKIE_NAME))
+    response.delete_cookie(SESSION_COOKIE_NAME, path="/")
+    return {"logged_out": True}
+
+
+@app.get("/auth/me")
+def me(current_user: User = Depends(require_current_user)) -> dict[str, object]:
+    return {"user": public_user(current_user)}
+
+
 @app.get("/status")
 def status(client: CupsClient = Depends(get_cups_client)) -> dict[str, object]:
     try:
@@ -71,32 +194,61 @@ def status(client: CupsClient = Depends(get_cups_client)) -> dict[str, object]:
 @app.post("/print")
 def print_file(
     request: PrintRequest,
+    current_user: User = Depends(require_current_user),
     client: CupsClient = Depends(get_cups_client),
     storage: TempFileStorage = Depends(get_file_storage),
+    database: Database = Depends(get_database),
 ) -> dict[str, object]:
-    record = storage.get_record(request.file_id)
-    if record is None:
-        raise HTTPException(status_code=404, detail="File not found")
+    record = get_user_file_record(storage, request.file_id, current_user)
 
     try:
-        return submit_print_job(client, storage, record, request.options)
+        result = submit_print_job(client, storage, record, request.options)
     except PrintRequestError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    try:
+        history_id = database.insert_print_history(
+            user_id=current_user.id,
+            file_id=record.file_id,
+            original_filename=record.original_filename,
+            detected_mime=record.detected_mime,
+            size_bytes=record.size_bytes,
+            page_count=record.page_count,
+            requested_options=request.options.model_dump(),
+            applied_options=result["applied_options"],
+            cups_job_id=int(result["job_id"]),
+            warnings=[str(warning) for warning in result["warnings"]],
+        )
+    except Exception:
+        LOGGER.exception(
+            "Failed to persist print history after submitting CUPS job %s",
+            result["job_id"],
+        )
+        remember_unpersisted_job(current_user.id, int(result["job_id"]))
+        history_id = None
+        result["warnings"] = [
+            *[str(warning) for warning in result["warnings"]],
+            "Print history could not be persisted; CUPS job was submitted",
+        ]
+    result["history_id"] = history_id
+    return result
 
 
 @app.get("/jobs")
 def list_jobs(
     scope: str = Query("active", description="Job scope: active, completed, or all"),
+    current_user: User = Depends(require_current_user),
     client: CupsClient = Depends(get_cups_client),
+    database: Database = Depends(get_database),
 ) -> dict[str, object]:
     if scope not in JOB_SCOPE_TO_CUPS:
         raise HTTPException(status_code=400, detail="Invalid job scope")
     try:
+        allowed_job_ids = get_user_cups_job_ids(database, current_user)
         return {
             "scope": scope,
             "queue": client.queue_name,
-            "jobs": client.list_jobs(scope),
-            "counts": client.job_counts(),
+            "jobs": filter_jobs_by_owner(client.list_jobs(scope), allowed_job_ids),
+            "counts": user_job_counts(client, allowed_job_ids),
         }
     except CupsClientError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -116,7 +268,13 @@ def get_options(
 
 
 @app.get("/jobs/{job_id}")
-def get_job(job_id: int, client: CupsClient = Depends(get_cups_client)) -> dict[str, object]:
+def get_job(
+    job_id: int,
+    current_user: User = Depends(require_current_user),
+    client: CupsClient = Depends(get_cups_client),
+    database: Database = Depends(get_database),
+) -> dict[str, object]:
+    require_user_cups_job(database, current_user, job_id)
     try:
         job = client.get_job(job_id)
     except CupsClientError as exc:
@@ -128,7 +286,13 @@ def get_job(job_id: int, client: CupsClient = Depends(get_cups_client)) -> dict[
 
 
 @app.delete("/jobs/{job_id}")
-def cancel_job(job_id: int, client: CupsClient = Depends(get_cups_client)) -> dict[str, object]:
+def cancel_job(
+    job_id: int,
+    current_user: User = Depends(require_current_user),
+    client: CupsClient = Depends(get_cups_client),
+    database: Database = Depends(get_database),
+) -> dict[str, object]:
+    require_user_cups_job(database, current_user, job_id)
     try:
         return client.cancel_job(job_id)
     except CupsClientError as exc:
@@ -136,7 +300,13 @@ def cancel_job(job_id: int, client: CupsClient = Depends(get_cups_client)) -> di
 
 
 @app.post("/jobs/{job_id}/forget")
-def forget_job(job_id: int, client: CupsClient = Depends(get_cups_client)) -> dict[str, object]:
+def forget_job(
+    job_id: int,
+    current_user: User = Depends(require_current_user),
+    client: CupsClient = Depends(get_cups_client),
+    database: Database = Depends(get_database),
+) -> dict[str, object]:
+    require_user_cups_job(database, current_user, job_id)
     try:
         result = client.forget_job(job_id)
     except CupsClientError as exc:
@@ -150,10 +320,11 @@ def forget_job(job_id: int, client: CupsClient = Depends(get_cups_client)) -> di
 @app.post("/files")
 async def upload_file(
     file: UploadFile = File(...),
+    current_user: User = Depends(require_current_user),
     storage: TempFileStorage = Depends(get_file_storage),
 ) -> dict[str, object]:
     try:
-        record = await storage.save_upload(file)
+        record = await storage.save_upload(file, owner_user_id=current_user.id)
     except StorageError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
     return file_response(record)
@@ -162,11 +333,10 @@ async def upload_file(
 @app.get("/files/{file_id}/preview")
 def list_previews(
     file_id: str,
+    current_user: User = Depends(require_current_user),
     storage: TempFileStorage = Depends(get_file_storage),
 ) -> dict[str, object]:
-    record = storage.get_record(file_id)
-    if record is None:
-        raise HTTPException(status_code=404, detail="File not found")
+    record = get_user_file_record(storage, file_id, current_user)
 
     preview_service = PreviewService(storage)
     try:
@@ -192,11 +362,10 @@ def list_previews(
 def get_preview_page(
     file_id: str,
     page: str,
+    current_user: User = Depends(require_current_user),
     storage: TempFileStorage = Depends(get_file_storage),
 ) -> FileResponse:
-    record = storage.get_record(file_id)
-    if record is None:
-        raise HTTPException(status_code=404, detail="File not found")
+    record = get_user_file_record(storage, file_id, current_user)
 
     preview_service = PreviewService(storage)
     try:
@@ -206,6 +375,43 @@ def get_preview_page(
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
     return FileResponse(path, media_type="image/png")
+
+
+@app.get("/me/preferences")
+def get_preferences(
+    current_user: User = Depends(require_current_user),
+    database: Database = Depends(get_database),
+) -> dict[str, object]:
+    return {"preferences": database.get_preferences(current_user.id) or {}}
+
+
+@app.put("/me/preferences")
+def put_preferences(
+    preferences: dict[str, Any] = Body(...),
+    current_user: User = Depends(require_current_user),
+    database: Database = Depends(get_database),
+) -> dict[str, object]:
+    return {"preferences": database.upsert_preferences(current_user.id, preferences)}
+
+
+@app.get("/history")
+def list_history(
+    current_user: User = Depends(require_current_user),
+    database: Database = Depends(get_database),
+) -> dict[str, object]:
+    return {"history": database.list_print_history(current_user.id)}
+
+
+@app.get("/history/{history_id}")
+def get_history_entry(
+    history_id: int,
+    current_user: User = Depends(require_current_user),
+    database: Database = Depends(get_database),
+) -> dict[str, object]:
+    entry = database.get_print_history(current_user.id, history_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="History entry not found")
+    return entry
 
 
 def file_response(record: StoredFile) -> dict[str, object]:
@@ -219,6 +425,71 @@ def file_response(record: StoredFile) -> dict[str, object]:
     }
 
 
+def get_user_file_record(
+    storage: TempFileStorage,
+    file_id: str,
+    current_user: User,
+) -> StoredFile:
+    record = storage.get_record(file_id)
+    if record is None or record.owner_user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="File not found")
+    return record
+
+
+def require_user_cups_job(database: Database, current_user: User, job_id: int) -> None:
+    if job_id in get_unpersisted_jobs(current_user.id):
+        return
+    try:
+        owns_job = database.user_has_cups_job(current_user.id, job_id)
+    except Exception as exc:
+        LOGGER.warning(
+            "Failed to check persisted CUPS job ownership for user %s job %s: %s",
+            current_user.id,
+            job_id,
+            exc,
+        )
+        owns_job = False
+    if not owns_job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+
+def get_user_cups_job_ids(database: Database, current_user: User) -> set[int]:
+    try:
+        persisted_job_ids = database.list_user_cups_job_ids(current_user.id)
+    except Exception as exc:
+        LOGGER.warning(
+            "Failed to list persisted CUPS job ownership for user %s: %s",
+            current_user.id,
+            exc,
+        )
+        persisted_job_ids = set()
+    return persisted_job_ids | get_unpersisted_jobs(current_user.id)
+
+
+def filter_jobs_by_owner(
+    jobs: list[dict[str, Any]],
+    allowed_job_ids: set[int],
+) -> list[dict[str, Any]]:
+    return [job for job in jobs if int(job.get("job_id", -1)) in allowed_job_ids]
+
+
+def user_job_counts(client: CupsClient, allowed_job_ids: set[int]) -> dict[str, int]:
+    return {
+        scope: len(filter_jobs_by_owner(client.list_jobs(scope), allowed_job_ids))
+        for scope in JOB_SCOPE_TO_CUPS
+    }
+
+
+def remember_unpersisted_job(user_id: int, job_id: int) -> None:
+    with UNPERSISTED_JOB_LOCK:
+        UNPERSISTED_JOB_OWNERS.setdefault(user_id, set()).add(job_id)
+
+
+def get_unpersisted_jobs(user_id: int) -> set[int]:
+    with UNPERSISTED_JOB_LOCK:
+        return set(UNPERSISTED_JOB_OWNERS.get(user_id, set()))
+
+
 def parse_page_number(page: str) -> int:
     try:
         page_number = int(page)
@@ -227,3 +498,28 @@ def parse_page_number(page: str) -> int:
     if page_number < 1:
         raise PreviewError("Invalid page number", 400)
     return page_number
+
+
+def set_session_cookie(response: Response, session: LoginSession) -> None:
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=session.token,
+        max_age=SESSION_TTL_DAYS * 24 * 60 * 60,
+        httponly=True,
+        secure=SESSION_COOKIE_SECURE,
+        samesite="lax",
+        path="/",
+    )
+
+
+def auth_response(session: LoginSession) -> dict[str, object]:
+    return {
+        "user": public_user(session.user),
+        "session": {"expires_at": session.expires_at},
+    }
+
+
+def client_ip(request: Request) -> str | None:
+    if request.client is None:
+        return None
+    return request.client.host

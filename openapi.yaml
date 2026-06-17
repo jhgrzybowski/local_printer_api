@@ -16,10 +16,13 @@ servers:
 
 tags:
   - name: Health
+  - name: Auth
   - name: Printer
   - name: Files
   - name: Print
   - name: Jobs
+  - name: Preferences
+  - name: History
 
 paths:
   /health:
@@ -34,6 +37,98 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthResponse"
+
+  /auth/signup:
+    post:
+      tags: [Auth]
+      summary: Create a local user account and session
+      description: |
+        Creates a LAN-local account, starts a session, and sets the
+        `local_printer_session` HttpOnly cookie used by protected endpoints.
+      operationId: signup
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SignupRequest"
+      responses:
+        "200":
+          description: Account created and session cookie set
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "400":
+          description: Invalid username or password
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Username already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Start a session for an existing user
+      description: |
+        Validates credentials, starts a session, and sets the
+        `local_printer_session` HttpOnly cookie used by protected endpoints.
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Session cookie set
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "401":
+          description: Invalid username or password
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: End the current session if one exists
+      operationId: logout
+      responses:
+        "200":
+          description: Session cookie cleared
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogoutResponse"
+
+  /auth/me:
+    get:
+      tags: [Auth]
+      summary: Get the current authenticated user
+      operationId: getCurrentUser
+      security:
+        - SessionCookieAuth: []
+      responses:
+        "200":
+          description: Current user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeResponse"
+        "401":
+          $ref: "#/components/responses/AuthenticationRequired"
 
   /status:
     get:
@@ -80,6 +175,8 @@ paths:
       tags: [Files]
       summary: Upload a file for previewing or printing
       operationId: uploadFile
+      security:
+        - SessionCookieAuth: []
       requestBody:
         required: true
         content:
@@ -98,6 +195,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/FileUploadResponse"
+        "401":
+          $ref: "#/components/responses/AuthenticationRequired"
         "400":
           description: Invalid or corrupt file
           content:
@@ -122,6 +221,8 @@ paths:
       tags: [Files]
       summary: Get preview metadata for an uploaded file
       operationId: getFilePreview
+      security:
+        - SessionCookieAuth: []
       parameters:
         - $ref: "#/components/parameters/FileId"
       responses:
@@ -131,8 +232,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PreviewResponse"
+        "401":
+          $ref: "#/components/responses/AuthenticationRequired"
         "404":
-          description: Unknown file ID
+          description: Unknown file ID or file owned by another user
           content:
             application/json:
               schema:
@@ -143,6 +246,8 @@ paths:
       tags: [Files]
       summary: Get one preview page as PNG
       operationId: getPreviewPage
+      security:
+        - SessionCookieAuth: []
       parameters:
         - $ref: "#/components/parameters/FileId"
         - name: page
@@ -160,6 +265,8 @@ paths:
               schema:
                 type: string
                 format: binary
+        "401":
+          $ref: "#/components/responses/AuthenticationRequired"
         "400":
           description: Invalid page number
           content:
@@ -167,7 +274,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
-          description: Unknown file ID or preview page not found
+          description: Unknown file ID, file owned by another user, or preview page not found
           content:
             application/json:
               schema:
@@ -178,6 +285,8 @@ paths:
       tags: [Print]
       summary: Submit an uploaded file to CUPS
       operationId: submitPrintJob
+      security:
+        - SessionCookieAuth: []
       requestBody:
         required: true
         content:
@@ -191,6 +300,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PrintResponse"
+        "401":
+          $ref: "#/components/responses/AuthenticationRequired"
         "400":
           description: Invalid print request or invalid page range
           content:
@@ -198,7 +309,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
-          description: Unknown file ID
+          description: Unknown file ID or file owned by another user
           content:
             application/json:
               schema:
@@ -219,12 +330,16 @@ paths:
   /jobs:
     get:
       tags: [Jobs]
-      summary: List CUPS jobs for the configured queue
+      summary: List current user's CUPS jobs for the configured queue
       description: |
-        Lists jobs from CUPS. The default `active` scope returns only
+        Lists jobs from CUPS that match the current user's persisted or
+        transient print submissions. The default `active` scope returns only
         not-completed jobs so frontend queue/task views do not show historical
-        completed jobs as cancelable work.
+        completed jobs as cancelable work. Jobs submitted by other users are
+        filtered out before job metadata is returned.
       operationId: listJobs
+      security:
+        - SessionCookieAuth: []
       parameters:
         - name: scope
           in: query
@@ -241,6 +356,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/JobsResponse"
+        "401":
+          $ref: "#/components/responses/AuthenticationRequired"
         "400":
           description: Invalid job scope
           content:
@@ -257,8 +374,13 @@ paths:
   /jobs/{job_id}:
     get:
       tags: [Jobs]
-      summary: Get one CUPS job
+      summary: Get one current-user CUPS job
+      description: |
+        Returns CUPS job details only when the job matches the current user's
+        persisted or transient print submissions.
       operationId: getJob
+      security:
+        - SessionCookieAuth: []
       parameters:
         - $ref: "#/components/parameters/JobId"
       responses:
@@ -268,8 +390,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/JobInfo"
+        "401":
+          $ref: "#/components/responses/AuthenticationRequired"
         "404":
-          description: Job not found
+          description: Job not found or not submitted by the current user
           content:
             application/json:
               schema:
@@ -289,6 +413,8 @@ paths:
         failed cancellations; they return a domain response explaining that the
         job is already terminal and can only be forgotten/purged if supported.
       operationId: cancelJob
+      security:
+        - SessionCookieAuth: []
       parameters:
         - $ref: "#/components/parameters/JobId"
       responses:
@@ -298,6 +424,14 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/CancelJobResponse"
+        "401":
+          $ref: "#/components/responses/AuthenticationRequired"
+        "404":
+          description: CUPS job was not submitted by the current user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "503":
           description: CUPS unavailable
           content:
@@ -314,6 +448,8 @@ paths:
         pycups `cancelJob(jobid, purge_job=True)`. Active jobs must be cancelled
         first. This endpoint does not perform bulk purges.
       operationId: forgetJob
+      security:
+        - SessionCookieAuth: []
       parameters:
         - $ref: "#/components/parameters/JobId"
       responses:
@@ -323,6 +459,14 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ForgetJobResponse"
+        "401":
+          $ref: "#/components/responses/AuthenticationRequired"
+        "404":
+          description: CUPS job was not submitted by the current user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "409":
           description: CUPS did not allow the purge, or the job is still active
           content:
@@ -336,7 +480,103 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /me/preferences:
+    get:
+      tags: [Preferences]
+      summary: Get saved preferences for the current user
+      operationId: getPreferences
+      security:
+        - SessionCookieAuth: []
+      responses:
+        "200":
+          description: Current user preferences
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PreferencesResponse"
+        "401":
+          $ref: "#/components/responses/AuthenticationRequired"
+
+    put:
+      tags: [Preferences]
+      summary: Replace saved preferences for the current user
+      operationId: putPreferences
+      security:
+        - SessionCookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Preferences"
+      responses:
+        "200":
+          description: Saved user preferences
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PreferencesResponse"
+        "401":
+          $ref: "#/components/responses/AuthenticationRequired"
+
+  /history:
+    get:
+      tags: [History]
+      summary: List print history for the current user
+      operationId: listHistory
+      security:
+        - SessionCookieAuth: []
+      responses:
+        "200":
+          description: Print history list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HistoryListResponse"
+        "401":
+          $ref: "#/components/responses/AuthenticationRequired"
+
+  /history/{history_id}:
+    get:
+      tags: [History]
+      summary: Get one print history entry for the current user
+      operationId: getHistoryEntry
+      security:
+        - SessionCookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/HistoryId"
+      responses:
+        "200":
+          description: Print history entry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PrintHistoryEntry"
+        "401":
+          $ref: "#/components/responses/AuthenticationRequired"
+        "404":
+          description: History entry not found for this user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
 components:
+  securitySchemes:
+    SessionCookieAuth:
+      type: apiKey
+      in: cookie
+      name: local_printer_session
+      description: HttpOnly session cookie set by signup/login.
+
+  responses:
+    AuthenticationRequired:
+      description: Authentication required
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
   parameters:
     FileId:
       name: file_id
@@ -354,6 +594,14 @@ components:
         type: integer
       description: CUPS job ID.
 
+    HistoryId:
+      name: history_id
+      in: path
+      required: true
+      schema:
+        type: integer
+      description: Per-user print history record ID.
+
   schemas:
     HealthResponse:
       type: object
@@ -365,6 +613,92 @@ components:
         service:
           type: string
           example: canon-printer-manager
+
+    SignupRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+          description: >
+            Desired username. Usernames are normalized to lowercase and must be
+            3-40 characters using letters, numbers, dot, underscore, or hyphen.
+          example: alice
+        password:
+          type: string
+          format: password
+          minLength: 8
+        display_name:
+          type:
+            - string
+            - "null"
+          maxLength: 80
+          example: Alice
+
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+          description: Username is normalized to lowercase before lookup.
+          example: alice
+        password:
+          type: string
+          format: password
+
+    User:
+      type: object
+      required: [id, username, created_at, updated_at]
+      properties:
+        id:
+          type: integer
+        username:
+          type: string
+          example: alice
+        display_name:
+          type:
+            - string
+            - "null"
+          example: Alice
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    AuthSession:
+      type: object
+      required: [expires_at]
+      properties:
+        expires_at:
+          type: string
+          format: date-time
+
+    AuthResponse:
+      type: object
+      required: [user, session]
+      properties:
+        user:
+          $ref: "#/components/schemas/User"
+        session:
+          $ref: "#/components/schemas/AuthSession"
+
+    LogoutResponse:
+      type: object
+      required: [logged_out]
+      properties:
+        logged_out:
+          type: boolean
+          example: true
+
+    MeResponse:
+      type: object
+      required: [user]
+      properties:
+        user:
+          $ref: "#/components/schemas/User"
 
     CupsStatus:
       type: object
@@ -584,6 +918,7 @@ components:
 
     PrintOptions:
       type: object
+      additionalProperties: true
       properties:
         copies:
           type: integer
@@ -596,38 +931,47 @@ components:
             - "null"
           description: Page range string, e.g. "1", "1,3-5,8".
         paper_size:
-          type: string
-          default: A4
+          type:
+            - string
+            - "null"
           example: A4
         orientation:
-          type: string
-          enum: [portrait, landscape, reverse-landscape, reverse-portrait]
-          default: portrait
+          type:
+            - string
+            - "null"
+          enum: [portrait, landscape, reverse-landscape, reverse-portrait, null]
         color_mode:
-          type: string
-          enum: [monochrome, color, auto]
-          default: color
+          type:
+            - string
+            - "null"
+          enum: [monochrome, color, auto, null]
         duplex:
-          type: string
-          enum: [none, long-edge, short-edge]
-          default: none
+          type:
+            - string
+            - "null"
+          enum: [none, long-edge, short-edge, null]
         quality:
-          type: string
-          enum: [draft, normal, high]
-          default: normal
+          type:
+            - string
+            - "null"
+          enum: [draft, normal, high, null]
         collate:
-          type: boolean
-          default: true
+          type:
+            - boolean
+            - "null"
         media_type:
-          type: string
+          type:
+            - string
+            - "null"
           example: plain
         fit_to_page:
-          type: boolean
-          default: true
+          type:
+            - boolean
+            - "null"
 
     PrintRequest:
       type: object
-      required: [file_id, options]
+      required: [file_id]
       properties:
         file_id:
           type: string
@@ -638,6 +982,7 @@ components:
       type: object
       required:
         - job_id
+        - history_id
         - queue
         - submitted_filename
         - applied_options
@@ -646,6 +991,13 @@ components:
       properties:
         job_id:
           type: integer
+        history_id:
+          type:
+            - integer
+            - "null"
+          description: >
+            Per-user print history record created for this submission. Null
+            means CUPS accepted the job but the history write failed.
         queue:
           type: string
           example: Canon_MG5350
@@ -729,6 +1081,7 @@ components:
             $ref: "#/components/schemas/JobInfo"
         counts:
           type: object
+          description: Counts after filtering CUPS jobs to the current user.
           properties:
             active:
               type: integer
@@ -767,6 +1120,91 @@ components:
           enum: [pycups-purge-job]
         reason:
           type: string
+
+    Preferences:
+      type: object
+      additionalProperties: true
+      description: >
+        Arbitrary JSON object persisted for the current user. The frontend can
+        store selected print defaults such as paper size, copies, color, duplex,
+        media type, and fit-to-page.
+      example:
+        paper_size: A4
+        copies: 2
+        color_mode: color
+        duplex: none
+
+    PreferencesResponse:
+      type: object
+      required: [preferences]
+      properties:
+        preferences:
+          $ref: "#/components/schemas/Preferences"
+
+    PrintHistoryEntry:
+      type: object
+      required:
+        - id
+        - file_id
+        - original_filename
+        - detected_mime
+        - size_bytes
+        - requested_options
+        - applied_options
+        - cups_job_id
+        - warnings
+        - status
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: integer
+        file_id:
+          type: string
+        original_filename:
+          type: string
+          example: test.pdf
+        detected_mime:
+          type: string
+          example: application/pdf
+        size_bytes:
+          type: integer
+          minimum: 0
+        page_count:
+          type:
+            - integer
+            - "null"
+          minimum: 1
+        requested_options:
+          $ref: "#/components/schemas/PrintOptions"
+        applied_options:
+          type: object
+          additionalProperties:
+            type: string
+        cups_job_id:
+          type: integer
+        warnings:
+          type: array
+          items:
+            type: string
+        status:
+          type: string
+          example: submitted
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    HistoryListResponse:
+      type: object
+      required: [history]
+      properties:
+        history:
+          type: array
+          items:
+            $ref: "#/components/schemas/PrintHistoryEntry"
 
     ErrorResponse:
       type: object

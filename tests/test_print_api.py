@@ -10,7 +10,9 @@ from pypdf import PdfWriter
 
 from app.main import app, get_cups_client, get_file_storage
 from app.services.cups_client import CupsClientError, normalize_job
+from app.services.database import Database
 from app.services.file_storage import TempFileStorage
+from tests.helpers import signup_user
 
 
 @pytest.fixture
@@ -19,11 +21,14 @@ def storage(tmp_path: Path) -> TempFileStorage:
 
 
 @pytest.fixture
-def client(storage: TempFileStorage) -> TestClient:
+def client(storage: TempFileStorage, isolated_database: Database) -> TestClient:
     app.dependency_overrides.clear()
     app.dependency_overrides[get_file_storage] = lambda: storage
     app.dependency_overrides[get_cups_client] = lambda: FakeCupsClient()
     with TestClient(app) as test_client:
+        user = signup_user(test_client)
+        for job_id in (123, 456, 789):
+            grant_cups_job(isolated_database, job_id, user["user"]["id"])
         yield test_client
     app.dependency_overrides.clear()
 
@@ -180,6 +185,21 @@ def upload_png(client: TestClient) -> str:
     return response.json()["file_id"]
 
 
+def grant_cups_job(database: Database, job_id: int, user_id: int = 1) -> None:
+    database.insert_print_history(
+        user_id=user_id,
+        file_id=f"test-file-{job_id}",
+        original_filename=f"job-{job_id}.pdf",
+        detected_mime="application/pdf",
+        size_bytes=123,
+        page_count=1,
+        requested_options={},
+        applied_options={},
+        cups_job_id=job_id,
+        warnings=[],
+    )
+
+
 def test_print_pdf_with_mocked_cups(client: TestClient) -> None:
     file_id = upload_pdf(client, 3)
 
@@ -236,6 +256,7 @@ def test_print_reports_cups_unavailable(storage: TempFileStorage) -> None:
     app.dependency_overrides[get_file_storage] = lambda: storage
     app.dependency_overrides[get_cups_client] = lambda: FailingCupsClient()
     with TestClient(app) as client:
+        signup_user(client)
         file_id = upload_pdf(client)
         response = client.post("/print", json={"file_id": file_id, "options": {}})
 
@@ -249,6 +270,7 @@ def test_print_reports_queue_missing(storage: TempFileStorage) -> None:
     app.dependency_overrides[get_file_storage] = lambda: storage
     app.dependency_overrides[get_cups_client] = lambda: FakeCupsClient(missing_queue())
     with TestClient(app) as client:
+        signup_user(client)
         file_id = upload_pdf(client)
         response = client.post("/print", json={"file_id": file_id, "options": {}})
 
@@ -262,6 +284,7 @@ def test_print_reports_queue_stopped(storage: TempFileStorage) -> None:
     app.dependency_overrides[get_file_storage] = lambda: storage
     app.dependency_overrides[get_cups_client] = lambda: FakeCupsClient(stopped_queue())
     with TestClient(app) as client:
+        signup_user(client)
         file_id = upload_pdf(client)
         response = client.post("/print", json={"file_id": file_id, "options": {}})
 
@@ -308,7 +331,9 @@ def test_get_job_returns_lifecycle_flags(client: TestClient) -> None:
     assert get_response.json()["can_cancel"] is True
 
 
-def test_cancel_active_job(client: TestClient) -> None:
+def test_cancel_active_job(client: TestClient, isolated_database: Database) -> None:
+    grant_cups_job(isolated_database, 123)
+
     cancel_response = client.delete("/jobs/123")
 
     assert cancel_response.status_code == 200
@@ -316,7 +341,12 @@ def test_cancel_active_job(client: TestClient) -> None:
     assert cancel_response.json()["cancelled"] is True
 
 
-def test_cancel_terminal_job_returns_domain_response(client: TestClient) -> None:
+def test_cancel_terminal_job_returns_domain_response(
+    client: TestClient,
+    isolated_database: Database,
+) -> None:
+    grant_cups_job(isolated_database, 456)
+
     response = client.delete("/jobs/456")
 
     assert response.status_code == 200
@@ -329,15 +359,15 @@ def test_cancel_terminal_job_returns_domain_response(client: TestClient) -> None
     }
 
 
-def test_cancel_missing_job_returns_domain_response(client: TestClient) -> None:
+def test_cancel_missing_job_returns_not_found_without_user_history(client: TestClient) -> None:
     missing_cancel_response = client.delete("/jobs/999")
 
-    assert missing_cancel_response.status_code == 200
-    assert missing_cancel_response.json()["job_id"] == 999
-    assert missing_cancel_response.json()["cancelled"] is False
+    assert missing_cancel_response.status_code == 404
 
 
-def test_forget_terminal_job(client: TestClient) -> None:
+def test_forget_terminal_job(client: TestClient, isolated_database: Database) -> None:
+    grant_cups_job(isolated_database, 456)
+
     response = client.post("/jobs/456/forget")
 
     assert response.status_code == 200
@@ -348,7 +378,12 @@ def test_forget_terminal_job(client: TestClient) -> None:
     }
 
 
-def test_forget_active_job_returns_conflict(client: TestClient) -> None:
+def test_forget_active_job_returns_conflict(
+    client: TestClient,
+    isolated_database: Database,
+) -> None:
+    grant_cups_job(isolated_database, 123)
+
     response = client.post("/jobs/123/forget")
 
     assert response.status_code == 409

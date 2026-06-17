@@ -2,6 +2,8 @@
 set -euo pipefail
 
 PRINTER_BACKEND="${PRINTER_BACKEND:-http://ubuntu26-remote.local:8000}"
+SMOKE_USERNAME="${SMOKE_USERNAME:-smoke_user}"
+SMOKE_PASSWORD="${SMOKE_PASSWORD:-smokepass123}"
 DO_PRINT=0
 PDF_PATH=""
 
@@ -11,10 +13,15 @@ Usage: $0 [--dry-run] [--print] [pdf-path]
 
 Defaults:
   PRINTER_BACKEND=$PRINTER_BACKEND
+  SMOKE_USERNAME=$SMOKE_USERNAME  (override with env var)
+  SMOKE_PASSWORD=***              (override with env var SMOKE_PASSWORD)
 
 By default this script is a dry run: it checks health/status/options and uploads
 a PDF, but it does not submit a print job. Pass --print to submit one safe
 one-page monochrome simplex job.
+
+A session is created automatically (signup if the account does not exist yet,
+then login) and the cookie is reused for all auth-protected requests.
 EOF
 }
 
@@ -144,6 +151,9 @@ if [[ ! -f "$PDF_PATH" ]]; then
   exit 1
 fi
 
+COOKIE_JAR="$(mktemp /tmp/smoke-cookie-XXXXXX.txt)"
+trap 'rm -f "$COOKIE_JAR"' EXIT
+
 section "Backend"
 echo "PRINTER_BACKEND=$PRINTER_BACKEND"
 echo "PDF_PATH=$PDF_PATH"
@@ -161,8 +171,34 @@ section "Options"
 request curl -4 -sS "$PRINTER_BACKEND/options"
 echo
 
+section "Auth"
+auth_payload="{\"username\":\"${SMOKE_USERNAME}\",\"password\":\"${SMOKE_PASSWORD}\"}"
+
+echo "Signing up (ignored if account already exists)..."
+curl -4 -sS -o /dev/null -w "signup status: %{http_code}\n" \
+  -X POST "$PRINTER_BACKEND/auth/signup" \
+  -H "content-type: application/json" \
+  -d "$auth_payload" \
+  -c "$COOKIE_JAR"
+
+echo "Logging in..."
+login_response="$(curl -4 -sS \
+  -X POST "$PRINTER_BACKEND/auth/login" \
+  -H "content-type: application/json" \
+  -d "$auth_payload" \
+  -c "$COOKIE_JAR" -b "$COOKIE_JAR")"
+echo "$login_response"
+if ! printf '%s' "$login_response" | python3 -c "import json,sys; d=json.load(sys.stdin); assert 'user' in d" 2>/dev/null; then
+  echo "Login failed — check SMOKE_USERNAME / SMOKE_PASSWORD" >&2
+  exit 1
+fi
+echo "Session established."
+
 section "Upload"
-upload_response="$(curl -4 -sS -X POST "$PRINTER_BACKEND/files" -F "file=@${PDF_PATH};type=application/pdf")"
+upload_response="$(curl -4 -sS \
+  -X POST "$PRINTER_BACKEND/files" \
+  -b "$COOKIE_JAR" \
+  -F "file=@${PDF_PATH};type=application/pdf")"
 echo "$upload_response"
 file_id="$(printf '%s' "$upload_response" | json_value "file_id")"
 echo "Uploaded file_id=$file_id"
@@ -174,7 +210,9 @@ if [[ "$DO_PRINT" != "1" ]]; then
 fi
 
 section "Print"
-print_response="$(curl -4 -sS -X POST "$PRINTER_BACKEND/print" \
+print_response="$(curl -4 -sS \
+  -X POST "$PRINTER_BACKEND/print" \
+  -b "$COOKIE_JAR" \
   -H "content-type: application/json" \
   -d "{
     \"file_id\": \"${file_id}\",
@@ -193,5 +231,5 @@ job_id="$(printf '%s' "$print_response" | json_value "job_id")"
 echo "Submitted job_id=$job_id"
 
 section "Job"
-request curl -4 -sS "$PRINTER_BACKEND/jobs/$job_id"
+request curl -4 -sS -b "$COOKIE_JAR" "$PRINTER_BACKEND/jobs/$job_id"
 echo

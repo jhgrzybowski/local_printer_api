@@ -372,10 +372,17 @@ PRINTER_IP=192.168.100.100
 BACKEND_HOST=192.168.100.99
 BACKEND_PORT=8000
 TMP_DIR=/var/tmp/printer-backend
+DB_PATH=/var/tmp/printer-backend/app.db
 MAX_UPLOAD_MB=50
 PREVIEW_DPI=110
 CORS_ALLOWED_ORIGINS=http://192.168.100.99:8000,http://ubuntu26-remote.local:8000,http://drukarka.local:8000,http://192.168.100.99:5173,...
 ```
+
+`DB_PATH` controls where SQLite stores the auth/history database.  The
+default (`/var/tmp/printer-backend/app.db`) is inside the same writable temp
+directory used for uploaded files so no extra directory creation is needed for
+plain `uvicorn` runs.  Set a custom path when you want the database outside of
+`/var/tmp` (e.g. for persistence across reboots).
 
 ### CORS Security Model
 
@@ -410,6 +417,37 @@ See `app/settings.py` for the complete allowlist.
 `CORS_ALLOWED_ORIGINS` is a comma-separated list of browser frontend origins.
 The Print Bar frontend should use
 `VITE_PRINTER_API_BASE_URL=http://192.168.100.99:8000` or the appropriate hostname.
+
+### Cross-site dev origins and session cookies
+
+The session cookie is set with `SameSite=Lax`.  On plain HTTP, a browser
+considers two URLs cross-site when their registered host differs — so
+`http://localhost:5173` (frontend) and `http://192.168.100.99:8000` (backend)
+are cross-site even though both are on the LAN.  The browser will **not** send
+the session cookie on cross-site XHR/fetch requests, which means every
+auth-protected endpoint returns `401` even though a CORS preflight would
+succeed.
+
+`localhost` and `127.0.0.1` origins are therefore **excluded from the default
+CORS allowlist** to prevent this confusing partial-works situation.
+
+**How to develop across machines on the LAN:**
+
+Access the Vite dev server through the same registered host as the backend:
+
+```bash
+# On the backend server, start the frontend dev server bound to the LAN IP:
+npm run dev -- --host 0.0.0.0
+
+# Then open the browser at the LAN IP, not localhost:
+http://192.168.100.99:5173
+```
+
+Both the frontend and the API share the registered host `192.168.100.99`, so
+cookies are sent same-site and authentication works.
+
+Alternatively, add a same-origin reverse proxy (e.g. nginx) in front of both
+services at a single origin.
 
 For Docker Compose, the verified default is to mount the host CUPS socket:
 
