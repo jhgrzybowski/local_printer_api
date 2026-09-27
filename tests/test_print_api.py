@@ -39,6 +39,7 @@ class FakeCupsClient:
     def __init__(self, queue: dict[str, Any] | None = None) -> None:
         self.queue = queue or ready_queue()
         self.submissions: list[dict[str, Any]] = []
+        self.list_scopes: list[str] = []
         self.jobs = {
             job_id: normalize_job(job_id, {
                 "job-name": name, "job-state": state,
@@ -68,18 +69,12 @@ class FakeCupsClient:
         return 123
 
     def list_jobs(self, scope: str = "active") -> list[dict[str, Any]]:
+        self.list_scopes.append(scope)
         if scope == "active":
             return [job for job in self.jobs.values() if job["is_active"]]
         if scope == "completed":
             return [job for job in self.jobs.values() if job["is_terminal"]]
         return list(self.jobs.values())
-
-    def job_counts(self) -> dict[str, int]:
-        return {
-            "active": len(self.list_jobs("active")),
-            "completed": len(self.list_jobs("completed")),
-            "all": len(self.list_jobs("all")),
-        }
 
     def get_job(self, job_id: int) -> dict[str, Any] | None:
         return self.jobs.get(job_id)
@@ -323,6 +318,58 @@ def test_jobs_all_scope_includes_history(client: TestClient) -> None:
     assert [job["job_id"] for job in body["jobs"]] == [123, 456, 789]
     assert body["jobs"][1]["can_cancel"] is False
     assert body["jobs"][1]["can_forget"] is True
+
+
+@pytest.mark.parametrize(
+    ("scope", "expected_ids"),
+    [
+        ("active", [123]),
+        ("completed", [456, 789]),
+        ("all", [123, 456, 789]),
+    ],
+)
+def test_jobs_uses_one_cups_listing_for_scope_and_counts(
+    isolated_database: Database,
+    scope: str,
+    expected_ids: list[int],
+) -> None:
+    cups = FakeCupsClient()
+    app.dependency_overrides.clear()
+    app.dependency_overrides[get_cups_client] = lambda: cups
+    with TestClient(app) as client:
+        user = signup_user(client)
+        for job_id in (123, 456, 789):
+            grant_cups_job(isolated_database, job_id, user["user"]["id"])
+        response = client.get(f"/jobs?scope={scope}")
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert cups.list_scopes == ["all"]
+    assert [job["job_id"] for job in response.json()["jobs"]] == expected_ids
+    assert response.json()["counts"] == {"active": 1, "completed": 2, "all": 3}
+
+
+def test_jobs_unknown_state_is_only_in_all_count(isolated_database: Database) -> None:
+    cups = FakeCupsClient()
+    cups.jobs[999] = normalize_job(999, {
+        "job-name": "unknown.pdf",
+        "job-state": 99,
+        "job-printer-uri": "ipp://localhost/printers/Canon_MG5350",
+        "time-at-creation": 1999,
+        "job-uuid": "urn:uuid:job-999",
+    })
+    app.dependency_overrides.clear()
+    app.dependency_overrides[get_cups_client] = lambda: cups
+    with TestClient(app) as client:
+        user = signup_user(client)
+        grant_cups_job(isolated_database, 999, user["user"]["id"])
+        response = client.get("/jobs?scope=all")
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert [job["job_id"] for job in response.json()["jobs"]] == [999]
+    assert response.json()["counts"] == {"active": 0, "completed": 0, "all": 1}
+    assert cups.list_scopes == ["all"]
 
 
 def test_jobs_rejects_invalid_scope(client: TestClient) -> None:
