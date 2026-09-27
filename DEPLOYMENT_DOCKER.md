@@ -120,12 +120,17 @@ TMP_DIR=/var/tmp/printer-backend
 DB_PATH=/var/lib/local-printer-api/app.db
 MAX_UPLOAD_MB=50
 PREVIEW_DPI=110
-CORS_ALLOWED_ORIGINS=http://192.168.100.99,http://192.168.100.99:80,http://ubuntu26-remote.local,http://ubuntu26-remote.local:80,http://drukarka.local,http://drukarka.local:80,http://192.168.100.99:5173,http://ubuntu26-remote.local:5173,http://localhost:5173,http://127.0.0.1:5173
 ```
 
-Browser clients are allowed only when their exact origin is listed in
-`CORS_ALLOWED_ORIGINS`; wildcard CORS is not enabled by default. For the Print
-Bar frontend on the same Ubuntu server, set:
+Docker Compose passes an empty `CORS_ALLOWED_ORIGINS` unless you set an
+override, so the API uses
+`DEFAULT_CORS_ALLOWED_ORIGINS` in `app/settings.py`. Browser clients are
+allowed only when their exact origin is listed there; wildcard CORS is not
+enabled by default. An explicit comma-separated `CORS_ALLOWED_ORIGINS`
+override replaces that entire list. The default excludes `localhost` and
+`127.0.0.1`: with a LAN-hosted API, its `SameSite=Lax` session cookie is not
+sent by a localhost frontend on cross-site requests, even if that origin is
+allowlisted. For the Print Bar frontend on the same Ubuntu server, set:
 
 ```env
 VITE_PRINTER_API_BASE_URL=http://192.168.100.99:8000

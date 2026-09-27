@@ -375,7 +375,6 @@ TMP_DIR=/var/tmp/printer-backend
 DB_PATH=/var/tmp/printer-backend/app.db
 MAX_UPLOAD_MB=50
 PREVIEW_DPI=110
-CORS_ALLOWED_ORIGINS=http://192.168.100.99:8000,http://ubuntu26-remote.local:8000,http://drukarka.local:8000,http://192.168.100.99:5173,...
 ```
 
 `DB_PATH` controls where SQLite stores the auth/history database.  The
@@ -395,24 +394,20 @@ plain `uvicorn` runs.  Set a custom path when you want the database outside of
 
 **Customization for different deployments:**
 
-Override `CORS_ALLOWED_ORIGINS` via environment variable (comma-separated list):
+Override `CORS_ALLOWED_ORIGINS` via environment variable (comma-separated list).
+An override replaces the complete default list, so include every browser origin
+your deployment needs:
 
 ```bash
 # Docker Compose
-export CORS_ALLOWED_ORIGINS="http://my-api:8000,http://my-frontend:5173"
+export CORS_ALLOWED_ORIGINS="http://192.168.1.10:8000,http://192.168.1.10:5173"
 
 # Plain environment
-export CORS_ALLOWED_ORIGINS="http://different-ip:8000"
+export CORS_ALLOWED_ORIGINS="http://192.168.1.10:5173"
 ```
 
-**Default policy includes:**
-
-- Backend API: `192.168.100.99:8000`, `ubuntu26-remote.local:8000`, `drukarka.local:8000`
-- Vite dev ports (5173-5175) on all configured hosts
-- Production ports (80, 443) on `drukarka.local` (with and without explicit port)
-- Localhost for local development
-
-See `app/settings.py` for the complete allowlist.
+The authoritative default is `DEFAULT_CORS_ALLOWED_ORIGINS` in
+`app/settings.py`; leave the variable unset or empty to use that list.
 
 `CORS_ALLOWED_ORIGINS` is a comma-separated list of browser frontend origins.
 The Print Bar frontend should use
@@ -425,8 +420,8 @@ considers two URLs cross-site when their registered host differs — so
 `http://localhost:5173` (frontend) and `http://192.168.100.99:8000` (backend)
 are cross-site even though both are on the LAN.  The browser will **not** send
 the session cookie on cross-site XHR/fetch requests, which means every
-auth-protected endpoint returns `401` even though a CORS preflight would
-succeed.
+auth-protected endpoint returns `401` if a CORS override allows that origin.
+Adding localhost to the allowlist alone does not make the cookie cross-site.
 
 `localhost` and `127.0.0.1` origins are therefore **excluded from the default
 CORS allowlist** to prevent this confusing partial-works situation.
