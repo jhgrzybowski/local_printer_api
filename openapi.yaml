@@ -807,6 +807,11 @@ components:
           type: object
           additionalProperties:
             type: string
+        option_mapping:
+          description: CUPS option name selected for each API choice when choices use different backends.
+          type: object
+          additionalProperties:
+            type: string
         recommended_mapping:
           type: object
           additionalProperties:
