@@ -365,7 +365,7 @@ PRINTER_BACKEND=http://localhost:8000 scripts/smoke_print_api.sh --print
 
 For more detail, see:
 
-* `openapi.yaml` — full API reference.
+* `openapi.yaml` — canonical API reference, also served as JSON at `/openapi.json` for `/docs`.
 * `ENVIRONMENT.md` — documented verified Canon MG5350 environment.
 * `DEPLOYMENT_DOCKER.md` — Docker build, compose, socket, and deployment notes.
 * `TROUBLESHOOTING.md` — CUPS, driver, LPD, backend, and diagnostic notes.
