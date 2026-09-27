@@ -41,9 +41,8 @@ def ensure_printer_ready(client: CupsClient) -> dict[str, object]:
         raise PrintRequestError(f"Queue {client.queue_name} is stopped", 409)
     if status["accepting_jobs"] is False:
         raise PrintRequestError(f"Queue {client.queue_name} is not accepting jobs", 409)
-
-    if any("offline" in reason or reason == "network-unreachable" for reason in reasons):
-        raise PrintRequestError(f"Printer appears offline: {', '.join(reasons)}", 503)
+    if not status["ready_for_print"]:
+        raise PrintRequestError(f"Queue {client.queue_name} readiness is unknown", 503)
     return status
 
 

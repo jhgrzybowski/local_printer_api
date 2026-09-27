@@ -292,6 +292,54 @@ def test_print_reports_queue_stopped(storage: TempFileStorage) -> None:
     assert response.status_code == 409
 
 
+@pytest.mark.parametrize(
+    ("condition", "expected_http_status"),
+    [
+        ("offline_reason", 503),
+        ("failed_probe", 503),
+        ("unknown_state", 503),
+        ("unknown_acceptance", 503),
+        ("rejecting_jobs", 409),
+        ("stopped", 409),
+    ],
+)
+def test_print_rejection_matches_status_readiness(
+    storage: TempFileStorage, condition: str, expected_http_status: int
+) -> None:
+    queue = ready_queue()
+    if condition == "offline_reason":
+        queue["attributes"]["printer-state-reasons"] = ["offline-report"]
+    elif condition == "failed_probe":
+        queue["network"] = {"checked": True, "reachable": False}
+    elif condition == "unknown_state":
+        queue["attributes"].pop("printer-state")
+    elif condition == "unknown_acceptance":
+        queue["attributes"].pop("printer-is-accepting-jobs")
+    elif condition == "rejecting_jobs":
+        queue["attributes"]["printer-is-accepting-jobs"] = False
+    else:
+        queue["attributes"]["printer-state"] = 5
+
+    fake_cups = FakeCupsClient(queue)
+    app.dependency_overrides.clear()
+    app.dependency_overrides[get_file_storage] = lambda: storage
+    app.dependency_overrides[get_cups_client] = lambda: fake_cups
+    with TestClient(app) as client:
+        signup_user(client)
+        file_id = upload_pdf(client)
+        status = client.get("/status")
+        response = client.post("/print", json={"file_id": file_id, "options": {}})
+    app.dependency_overrides.clear()
+
+    assert status.status_code == 200
+    assert status.json()["ready_for_print"] is False
+    if condition in {"offline_reason", "failed_probe"}:
+        assert status.json()["enabled"] is True
+        assert status.json()["accepting_jobs"] is True
+    assert response.status_code == expected_http_status
+    assert fake_cups.submissions == []
+
+
 def test_jobs_defaults_to_active_scope(client: TestClient) -> None:
     list_response = client.get("/jobs")
 
