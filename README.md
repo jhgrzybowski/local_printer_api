@@ -113,7 +113,25 @@ If you are not using the Canon MG5350 environment documented in this repository,
 
 ## Run the API
 
-From the repository root:
+For a direct host run, create the durable SQLite directory once for the account
+that will run the API:
+
+```bash
+sudo install -d -m 700 -o "$(id -un)" -g "$(id -gn)" /var/lib/local-printer-api
+```
+
+If upgrading a host run that used the old default database path, stop the API
+and move its database before restarting:
+
+```bash
+sudo mv -i /var/tmp/printer-backend/app.db /var/lib/local-printer-api/app.db
+sudo chown "$(id -un):$(id -gn)" /var/lib/local-printer-api/app.db
+```
+
+Run the move only when that old database exists. If the destination already
+exists, decide which database to keep before accepting the overwrite prompt.
+Alternatively, set `DB_PATH` to another durable path writable by the API
+account. From the repository root:
 
 ```bash
 source .venv/bin/activate

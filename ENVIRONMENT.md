@@ -372,17 +372,20 @@ PRINTER_IP=192.168.100.100
 BACKEND_HOST=192.168.100.99
 BACKEND_PORT=8000
 TMP_DIR=/var/tmp/printer-backend
-DB_PATH=/var/tmp/printer-backend/app.db
+DB_PATH=/var/lib/local-printer-api/app.db
 MAX_UPLOAD_MB=50
 PREVIEW_DPI=110
 CORS_ALLOWED_ORIGINS=http://192.168.100.99:8000,http://ubuntu26-remote.local:8000,http://drukarka.local:8000,http://192.168.100.99:5173,...
 ```
 
-`DB_PATH` controls where SQLite stores the auth/history database.  The
-default (`/var/tmp/printer-backend/app.db`) is inside the same writable temp
-directory used for uploaded files so no extra directory creation is needed for
-plain `uvicorn` runs.  Set a custom path when you want the database outside of
-`/var/tmp` (e.g. for persistence across reboots).
+`DB_PATH` controls where SQLite stores users, sessions, preferences, and print
+history. The default is `/var/lib/local-printer-api/app.db`, matching the Docker
+Compose setting. For a host install, create `/var/lib/local-printer-api` and give
+the account running the API write access before starting it (see README.md).
+`/var/tmp/printer-backend` is for temporary uploads and previews; Ubuntu may
+remove its contents after an idle period. An existing database at the old
+`/var/tmp/printer-backend/app.db` location must be moved to the new path while
+the API is stopped, or set `DB_PATH` to an existing durable location.
 
 ### CORS Security Model
 
