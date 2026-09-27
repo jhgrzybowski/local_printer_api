@@ -398,3 +398,14 @@ def test_options_endpoint_returns_detected_capabilities(client: TestClient) -> N
     assert response.json()["queue"] == "Canon_MG5350"
     assert response.json()["paper_sizes"]["choices"] == ["A4"]
     assert response.json()["duplex_modes"]["mapping"]["none"] == "None"
+
+
+def test_options_endpoint_reports_capability_failure(client: TestClient) -> None:
+    class FailingCupsClient(FakeCupsClient):
+        def get_option_capabilities(self) -> dict[str, set[str]]:
+            raise CupsClientError("CUPS capability detection failed")
+
+    app.dependency_overrides[get_cups_client] = lambda: FailingCupsClient()
+    response = client.get("/options")
+
+    assert response.status_code == 503
