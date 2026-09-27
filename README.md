@@ -273,7 +273,9 @@ removed hourly and at startup. Active CUPS jobs protect their upload and
 history until they finish; files currently being rendered or spooled are held
 by a file lock. If CUPS cannot be queried, file and history cleanup waits for
 the next interval. CUPS keeps its own job records independently of this API's
-history retention.
+history retention. Once a completed job's history expires, this API also loses
+the ownership claim used to show or manage that CUPS job, even if CUPS still
+retains it. Increase `HISTORY_TTL_DAYS` if longer API access is needed.
 
 ### Jobs
 
