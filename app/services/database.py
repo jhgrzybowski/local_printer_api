@@ -330,6 +330,27 @@ class Database:
             ).fetchone()
         return history_from_row(row) if row is not None else None
 
+    def update_print_history_status_for_claim(self, claim: JobClaim, status: str) -> None:
+        """Update only the history belonging to this exact CUPS job identity."""
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE print_history
+                SET status = ?, updated_at = ?
+                WHERE user_id = ? AND cups_job_id = ? AND cups_printer_uri = ?
+                  AND cups_created_at = ? AND cups_job_uuid IS ?
+                  AND status != ? AND (
+                    ? = 'forgotten' OR status NOT IN ('forgotten', 'canceled', 'aborted', 'completed')
+                  ) AND NOT (status = 'cancel-requested'
+                             AND ? IN ('pending', 'pending-held', 'processing', 'processing-stopped'))
+                """,
+                (
+                    status, datetime.now(timezone.utc).isoformat(timespec="microseconds"),
+                    claim.user_id, claim.job_id, claim.printer_uri, claim.created_at,
+                    claim.job_uuid, status, status, status,
+                ),
+            )
+
     def list_job_claims(self, user_id: int) -> list[JobClaim]:
         with self.connect() as connection:
             rows = connection.execute(
