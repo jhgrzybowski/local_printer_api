@@ -134,7 +134,7 @@ class TempFileStorage:
 
     def filtered_pdf_path(self, file_id: str) -> Path:
         self.filtered_dir.mkdir(parents=True, exist_ok=True)
-        return self.filtered_dir / f"{file_id}.pdf"
+        return self.filtered_dir / f"{file_id}-{secrets.token_urlsafe(12)}.pdf"
 
     def _ensure_dirs(self) -> None:
         self.files_dir.mkdir(parents=True, exist_ok=True)

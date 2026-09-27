@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import tempfile
 from pathlib import Path
 
 from app.services.file_storage import StoredFile, TempFileStorage
@@ -71,7 +73,7 @@ class PreviewService:
         paths: list[Path] = []
         for index, image in enumerate(images, start=1):
             path = preview_dir / f"page-{index}.png"
-            image.save(path, "PNG")
+            _save_png_atomic(image, path)
             paths.append(path)
         return paths
 
@@ -85,7 +87,18 @@ class PreviewService:
             with Image.open(source) as image:
                 image.thumbnail((1600, 1600))
                 output = preview_dir / "page-1.png"
-                image.convert("RGB").save(output, "PNG")
+                _save_png_atomic(image.convert("RGB"), output)
                 return output
         except Exception as exc:
             raise PreviewError(f"Unable to generate image preview: {exc}", 400) from exc
+
+
+def _save_png_atomic(image: object, destination: Path) -> None:
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{destination.stem}-", suffix=".png", dir=destination.parent)
+    os.close(fd)
+    temporary = Path(temporary_name)
+    try:
+        image.save(temporary, "PNG")  # type: ignore[attr-defined]
+        temporary.replace(destination)
+    finally:
+        temporary.unlink(missing_ok=True)

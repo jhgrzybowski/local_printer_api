@@ -9,6 +9,7 @@ from pypdf import PdfWriter
 
 from app.main import app, get_file_storage
 from app.services.file_storage import TempFileStorage, sanitize_filename
+from app.services.preview import _save_png_atomic
 from tests.helpers import signup_user
 
 
@@ -124,3 +125,19 @@ def test_invalid_preview_page_returns_400(file_client: TestClient) -> None:
 def test_storage_sanitizes_filenames() -> None:
     assert sanitize_filename("../../bad name.pdf") == "bad_name.pdf"
     assert sanitize_filename(r"..\..\nested\file.jpg") == "file.jpg"
+
+
+def test_preview_is_published_only_after_png_write_completes(tmp_path: Path) -> None:
+    destination = tmp_path / "page-1.png"
+
+    class SlowImage:
+        def save(self, path: Path, image_format: str) -> None:
+            assert image_format == "PNG"
+            path.write_bytes(b"partial")
+            assert not destination.exists()
+            path.write_bytes(b"complete")
+
+    _save_png_atomic(SlowImage(), destination)
+
+    assert destination.read_bytes() == b"complete"
+    assert not list(tmp_path.glob(".page-1-*.png"))

@@ -23,6 +23,7 @@ class PreparedPrint:
     file_path: Path
     title: str
     selected_pages: list[int] | None
+    temporary: bool = False
 
 
 def ensure_printer_ready(client: CupsClient) -> dict[str, object]:
@@ -67,7 +68,7 @@ def prepare_print_file(
             selected_pages = filter_pdf_pages(source, filtered, options.pages, record.page_count)
         except PageRangeError as exc:
             raise PrintRequestError(exc.message, 400) from exc
-        return PreparedPrint(filtered, f"{record.original_filename} pages {options.pages}", selected_pages)
+        return PreparedPrint(filtered, f"{record.original_filename} pages {options.pages}", selected_pages, True)
 
     if record.detected_mime in {"image/png", "image/jpeg"}:
         try:
@@ -89,14 +90,16 @@ def submit_print_job(
 ) -> dict[str, object]:
     ensure_printer_ready(client)
     prepared = prepare_print_file(storage, record, options)
-    capabilities = client.get_option_capabilities()
-    mapped = options.to_cups_options(capabilities)
-    title = _safe_title(prepared.title)
-
     try:
+        capabilities = client.get_option_capabilities()
+        mapped = options.to_cups_options(capabilities)
+        title = _safe_title(prepared.title)
         job_id = client.print_file(prepared.file_path, title, mapped.applied_options)
     except CupsClientError as exc:
         raise PrintRequestError(str(exc), 503) from exc
+    finally:
+        if prepared.temporary:
+            prepared.file_path.unlink(missing_ok=True)
 
     warnings = list(mapped.warnings)
     if prepared.selected_pages is not None:
