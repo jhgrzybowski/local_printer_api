@@ -227,6 +227,40 @@ Download page 1 preview:
 curl -b cookies.txt -o preview-page-1.png "$PRINTER_BACKEND/files/$FILE_ID/preview/1"
 ```
 
+### Recover uploads from before accounts existed
+
+Old upload metadata may have no `owner_user_id`. These files stay inaccessible
+through the API until a local operator identifies the rightful account. The
+API returns 404 for an unowned file, just as it does for a missing file or one
+owned by another account. Never assign a legacy upload based only on whoever
+first requests its ID.
+
+On a host installation, run these commands as the account that runs the API,
+with the same `TMP_DIR` and `DB_PATH` values as the service:
+
+```bash
+python3 scripts/claim_legacy_upload.py list
+python3 scripts/claim_legacy_upload.py claim EXACT_FILE_ID alice
+python3 scripts/claim_legacy_upload.py claim EXACT_FILE_ID alice --apply
+```
+
+The first command lists readable, unowned uploads. The second shows the chosen
+file and existing account without changing anything. Check the filename and
+file ID against your own records before using `--apply`. The command refuses to
+transfer an already owned upload or create a missing account/database. It
+changes only that file's metadata, preserving its permissions; the file bytes
+stay in place. To use custom paths, add `--tmp-dir PATH --db-path PATH` before
+`list` or `claim`.
+
+For the documented Docker Compose deployment, the script is included in the
+API image and uses the mounted upload and database volumes:
+
+```bash
+docker compose exec api python scripts/claim_legacy_upload.py list
+docker compose exec api python scripts/claim_legacy_upload.py claim EXACT_FILE_ID alice
+docker compose exec api python scripts/claim_legacy_upload.py claim EXACT_FILE_ID alice --apply
+```
+
 ### Print one page safely
 
 ```bash
