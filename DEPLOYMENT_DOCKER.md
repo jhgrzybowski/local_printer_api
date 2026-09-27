@@ -100,13 +100,13 @@ BACKEND_HOST=127.0.0.1 docker compose up -d --build
 
 The compose file:
 
-- exposes `${BACKEND_HOST:-192.168.100.99}:8000:8000`,
+- exposes `${BACKEND_HOST:-192.168.100.99}:${BACKEND_PORT:-8000}:8000`,
 - mounts the host CUPS socket,
 - stores uploads, filtered PDFs, and previews in the `printer-backend-tmp` named
   volume,
 - stores SQLite users, sessions, preferences, and print history in the
   `printer-backend-db` named volume at `/var/lib/local-printer-api/app.db`,
-- sets explicit environment variables for the printer queue, host metadata,
+- sets explicit environment variables for the printer queue, printer address,
   temporary directory, upload limit, and preview DPI.
 
 Current defaults:
@@ -142,7 +142,7 @@ publish it to the internet.
 From the Docker host:
 
 ```bash
-export PRINTER_BACKEND="http://${BACKEND_HOST:-192.168.100.99}:8000"
+export PRINTER_BACKEND="http://${BACKEND_HOST:-192.168.100.99}:${BACKEND_PORT:-8000}"
 curl -i "$PRINTER_BACKEND/health"
 curl -s "$PRINTER_BACKEND/status"
 curl -s "$PRINTER_BACKEND/options"

@@ -369,14 +369,17 @@ The API reads these environment variables and preserves the documented defaults:
 ```text
 QUEUE_NAME=Canon_MG5350
 PRINTER_IP=192.168.100.100
-BACKEND_HOST=192.168.100.99
-BACKEND_PORT=8000
 TMP_DIR=/var/tmp/printer-backend
 DB_PATH=/var/tmp/printer-backend/app.db
 MAX_UPLOAD_MB=50
 PREVIEW_DPI=110
 CORS_ALLOWED_ORIGINS=http://192.168.100.99:8000,http://ubuntu26-remote.local:8000,http://drukarka.local:8000,http://192.168.100.99:5173,...
 ```
+
+`BACKEND_HOST` and `BACKEND_PORT` configure the address and published port in
+`docker-compose.yml`; they are not API settings. The container listens on port
+8000. For direct Uvicorn runs, set the listen address and port with Uvicorn's
+`--host` and `--port` flags.
 
 `DB_PATH` controls where SQLite stores the auth/history database.  The
 default (`/var/tmp/printer-backend/app.db`) is inside the same writable temp
@@ -459,7 +462,7 @@ The Compose port mapping binds to the documented LAN host instead of all
 interfaces:
 
 ```text
-${BACKEND_HOST:-192.168.100.99}:8000:8000
+${BACKEND_HOST:-192.168.100.99}:${BACKEND_PORT:-8000}:8000
 ```
 
 See `DEPLOYMENT_DOCKER.md` for the full container workflow.
