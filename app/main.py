@@ -326,9 +326,11 @@ def cancel_job(
     claim = claim_for_job(current_user.id, job, client.queue_name)
     if claim is not None:
         if result.get("cancelled"):
-            database.update_print_history_status_for_claim(claim, "cancel-requested")
-        elif history_cups_state(job) is not None:
-            database.update_print_history_status_for_claim(claim, history_cups_state(job))
+            persist_history_status_after_action(database, claim, "cancel-requested")
+        else:
+            state = history_cups_state(job)
+            if state is not None:
+                persist_history_status_after_action(database, claim, state)
     return result
 
 
@@ -350,7 +352,7 @@ def forget_job(
         raise HTTPException(status_code=409, detail=result)
     claim = claim_for_job(current_user.id, job, client.queue_name)
     if claim is not None:
-        database.update_print_history_status_for_claim(claim, "forgotten")
+        persist_history_status_after_action(database, claim, "forgotten")
     return result
 
 
@@ -528,6 +530,16 @@ def get_user_job_claims(database: Database, current_user: User) -> list[JobClaim
 def history_cups_state(job: dict[str, Any] | None) -> str | None:
     state = job.get("state") if job is not None else None
     return state if isinstance(state, str) and state in HISTORY_CUPS_STATES else None
+
+
+def persist_history_status_after_action(database: Database, claim: JobClaim, status: str) -> None:
+    try:
+        database.update_print_history_status_for_claim(claim, status)
+    except Exception:
+        LOGGER.exception(
+            "Failed to persist print history status %s for CUPS job %s",
+            status, claim.job_id,
+        )
 
 
 def refreshed_user_history(

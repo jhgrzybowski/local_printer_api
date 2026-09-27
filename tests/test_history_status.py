@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app, get_cups_client
@@ -116,5 +117,42 @@ def test_cups_outage_keeps_last_known_history(isolated_database: Database) -> No
             response = client.get(f"/history/{history_id}")
             assert response.status_code == 200
             assert response.json()["status"] == "processing"
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "job_id", "result_key"),
+    [
+        ("delete", "/jobs/123", 123, "cancelled"),
+        ("post", "/jobs/456/forget", 456, "forgotten"),
+    ],
+)
+def test_history_write_failure_does_not_hide_successful_cups_action(
+    isolated_database: Database,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    method: str,
+    path: str,
+    job_id: int,
+    result_key: str,
+) -> None:
+    cups = FakeCupsClient()
+    app.dependency_overrides[get_cups_client] = lambda: cups
+    try:
+        with TestClient(app) as client:
+            user_id = signup_user(client)["user"]["id"]
+            history_id = history_row(isolated_database, user_id, job_id)
+
+            def fail_update(*args: object, **kwargs: object) -> None:
+                raise RuntimeError("history write failed")
+
+            monkeypatch.setattr(isolated_database, "update_print_history_status_for_claim", fail_update)
+            response = getattr(client, method)(path)
+
+            assert response.status_code == 200
+            assert response.json()[result_key] is True
+            assert isolated_database.get_print_history(user_id, history_id)["status"] == "submitted"
+            assert "Failed to persist print history status" in caplog.text
     finally:
         app.dependency_overrides.clear()
