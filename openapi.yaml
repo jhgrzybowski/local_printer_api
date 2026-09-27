@@ -1028,8 +1028,6 @@ components:
       properties:
         job_id:
           type: integer
-        queue:
-          type: string
         name:
           type: string
         state:
@@ -1045,7 +1043,13 @@ components:
         user:
           type: string
         printer_uri:
-          type: string
+          type:
+            - string
+            - "null"
+        job_uuid:
+          type:
+            - string
+            - "null"
         created_at:
           oneOf:
             - type: integer
