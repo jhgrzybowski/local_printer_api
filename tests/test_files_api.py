@@ -99,6 +99,9 @@ def test_preview_endpoint_returns_expected_metadata(file_client: TestClient) -> 
     assert body["page_count"] == 1
     assert body["pages"][0]["page"] == 1
     assert body["pages"][0]["url"] == f"/files/{file_id}/preview/1"
+    page = file_client.get(f"/files/{file_id}/preview/1")
+    assert page.status_code == 200
+    assert page.content.startswith(b"\x89PNG")
 
 
 def test_unknown_file_id_returns_404(file_client: TestClient) -> None:

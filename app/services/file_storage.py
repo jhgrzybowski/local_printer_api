@@ -4,8 +4,12 @@ import json
 import os
 import re
 import secrets
+import fcntl
+import shutil
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Iterator
 
 from starlette.datastructures import UploadFile
 
@@ -135,6 +139,90 @@ class TempFileStorage:
     def filtered_pdf_path(self, file_id: str) -> Path:
         self.filtered_dir.mkdir(parents=True, exist_ok=True)
         return self.filtered_dir / f"{file_id}.pdf"
+
+    @contextmanager
+    def lease(self, file_id: str) -> Iterator[None]:
+        """Keep cleanup from removing an upload during rendering or spooling."""
+        if not is_safe_file_id(file_id):
+            raise StorageError("Stored file is missing", 404)
+        try:
+            source = self.file_path(file_id).open("rb")
+        except FileNotFoundError as exc:
+            raise StorageError("Stored file is missing", 404) from exc
+        with source:
+            fcntl.flock(source, fcntl.LOCK_SH)
+            try:
+                yield
+            finally:
+                fcntl.flock(source, fcntl.LOCK_UN)
+
+    def prune_expired(self, cutoff_timestamp: float, protected_file_ids: set[str]) -> int:
+        """Remove expired upload groups, skipping files held by a worker."""
+        removed = 0
+        for metadata in self.metadata_dir.glob("*.json"):
+            file_id = metadata.stem
+            if not is_safe_file_id(file_id) or file_id in protected_file_ids:
+                continue
+            try:
+                if metadata.stat().st_mtime >= cutoff_timestamp:
+                    continue
+                with self.file_path(file_id).open("rb") as source:
+                    try:
+                        fcntl.flock(source, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        continue
+                    # Recheck after taking the lock, since another worker may have touched it.
+                    if metadata.stat().st_mtime >= cutoff_timestamp:
+                        continue
+                    metadata.unlink(missing_ok=True)
+                    self.file_path(file_id).unlink(missing_ok=True)
+                    shutil.rmtree(self.preview_dir(file_id), ignore_errors=True)
+                    for filtered in (
+                        self.filtered_dir / f"{file_id}.pdf",
+                        *self.filtered_dir.glob(f"{file_id}-*.pdf"),
+                    ):
+                        filtered.unlink(missing_ok=True)
+                    removed += 1
+            except (FileNotFoundError, OSError):
+                continue
+        # A crash can leave a payload or derived output without metadata.
+        for source_path in self.files_dir.glob("*"):
+            file_id = source_path.name
+            if (not is_safe_file_id(file_id) or file_id in protected_file_ids
+                    or self.metadata_path(file_id).exists()):
+                continue
+            try:
+                if source_path.stat().st_mtime >= cutoff_timestamp:
+                    continue
+                with source_path.open("rb") as source:
+                    try:
+                        fcntl.flock(source, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        continue
+                    if not self.metadata_path(file_id).exists():
+                        source_path.unlink(missing_ok=True)
+                        removed += 1
+            except (FileNotFoundError, OSError):
+                continue
+        for preview_dir in self.previews_dir.glob("*"):
+            file_id = preview_dir.name
+            if (not is_safe_file_id(file_id) or file_id in protected_file_ids
+                    or self.metadata_path(file_id).exists()):
+                continue
+            try:
+                if preview_dir.stat().st_mtime < cutoff_timestamp:
+                    shutil.rmtree(preview_dir)
+            except (FileNotFoundError, OSError):
+                continue
+        for filtered in self.filtered_dir.glob("*.pdf"):
+            if any(filtered.name.startswith(file_id) for file_id in protected_file_ids):
+                continue
+            try:
+                if filtered.stat().st_mtime < cutoff_timestamp:
+                    filtered.unlink()
+            except (FileNotFoundError, OSError):
+                continue
+        return removed
 
     def _ensure_dirs(self) -> None:
         self.files_dir.mkdir(parents=True, exist_ok=True)

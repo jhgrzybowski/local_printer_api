@@ -110,6 +110,8 @@ class Database:
 
                 CREATE INDEX IF NOT EXISTS idx_print_history_user_created
                     ON print_history(user_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_print_history_created
+                    ON print_history(created_at);
                 """
             )
             columns = {row["name"] for row in connection.execute("PRAGMA table_info(print_history)")}
@@ -305,7 +307,7 @@ class Database:
             )
             return int(cursor.lastrowid)
 
-    def list_print_history(self, user_id: int) -> list[dict[str, Any]]:
+    def list_print_history(self, user_id: int, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
         with self.connect() as connection:
             rows = connection.execute(
                 """
@@ -313,10 +315,52 @@ class Database:
                 FROM print_history
                 WHERE user_id = ?
                 ORDER BY created_at DESC, id DESC
+                LIMIT ? OFFSET ?
                 """,
-                (user_id,),
+                (user_id, limit, offset),
             ).fetchall()
         return [history_from_row(row) for row in rows]
+
+    def count_print_history(self, user_id: int) -> int:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) FROM print_history WHERE user_id = ?", (user_id,)
+            ).fetchone()
+        return int(row[0])
+
+    def file_ids_for_jobs(self, job_ids: set[int]) -> set[str]:
+        if not job_ids:
+            return set()
+        file_ids: set[str] = set()
+        with self.connect() as connection:
+            ids = list(job_ids)
+            for start in range(0, len(ids), 500):
+                batch = ids[start:start + 500]
+                placeholders = ",".join("?" for _ in batch)
+                rows = connection.execute(
+                    f"SELECT DISTINCT file_id FROM print_history WHERE cups_job_id IN ({placeholders})",
+                    batch,
+                ).fetchall()
+                file_ids.update(str(row[0]) for row in rows)
+        return file_ids
+
+    def prune_print_history(self, cutoff: str, active_job_ids: set[int]) -> int:
+        """Expire old records, retaining any whose CUPS job is still active."""
+        with self.connect() as connection:
+            connection.execute("CREATE TEMP TABLE active_cleanup_jobs (job_id INTEGER PRIMARY KEY)")
+            connection.executemany(
+                "INSERT INTO active_cleanup_jobs (job_id) VALUES (?)",
+                ((job_id,) for job_id in active_job_ids),
+            )
+            cursor = connection.execute(
+                """DELETE FROM print_history
+                   WHERE created_at < ? AND NOT EXISTS (
+                     SELECT 1 FROM active_cleanup_jobs
+                     WHERE active_cleanup_jobs.job_id = print_history.cups_job_id
+                   )""",
+                (cutoff,),
+            )
+        return cursor.rowcount
 
     def get_print_history(self, user_id: int, history_id: int) -> dict[str, Any] | None:
         with self.connect() as connection:

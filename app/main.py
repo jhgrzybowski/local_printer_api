@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 import logging
 from pathlib import Path
@@ -18,6 +19,7 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import FileResponse, HTMLResponse
+from starlette.background import BackgroundTask
 from pydantic import BaseModel
 
 from app.models.print_options import PrintRequest
@@ -25,6 +27,7 @@ from app.services.cups_client import JOB_SCOPE_TO_CUPS, CupsClient, CupsClientEr
 from app.services.auth import AuthError, AuthService, LoginSession, public_user
 from app.services.database import Database, JobClaim, User
 from app.services.file_storage import StoredFile, StorageError, TempFileStorage
+from app.services.maintenance import INTERVAL_SECONDS, maybe_run_maintenance
 from app.services.options_summary import build_options_summary
 from app.services.preview import PreviewError, PreviewService
 from app.services.print_service import PrintRequestError, submit_print_job
@@ -51,7 +54,21 @@ HISTORY_TERMINAL_STATES = frozenset({"canceled", "aborted", "completed", "forgot
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     get_database().delete_expired_sessions()
-    yield
+    task = asyncio.create_task(periodic_maintenance())
+    try:
+        yield
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+
+async def periodic_maintenance() -> None:
+    while True:
+        await asyncio.sleep(INTERVAL_SECONDS)
+        await asyncio.to_thread(maybe_run_maintenance, get_database(), get_file_storage(), get_cups_client())
 
 
 app = FastAPI(title="Local Printer API", docs_url=None, lifespan=lifespan)
@@ -205,8 +222,9 @@ def print_file(
     record = get_user_file_record(storage, request.file_id, current_user)
 
     try:
-        result = submit_print_job(client, storage, record, request.options)
-    except PrintRequestError as exc:
+        with storage.lease(record.file_id):
+            result = submit_print_job(client, storage, record, request.options)
+    except (PrintRequestError, StorageError) as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
     submitted_job = None
     try:
@@ -383,22 +401,22 @@ def list_previews(
 
     preview_service = PreviewService(storage)
     try:
-        paths = preview_service.ensure_previews(record)
-    except PreviewError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
-
-    return {
-        "file_id": record.file_id,
-        "page_count": record.page_count,
-        "pages": [
-            {
-                "page": index,
-                "url": f"/files/{record.file_id}/preview/{index}",
-                "size_bytes": path.stat().st_size,
+        with storage.lease(record.file_id):
+            paths = preview_service.ensure_previews(record)
+            return {
+                "file_id": record.file_id,
+                "page_count": record.page_count,
+                "pages": [
+                    {
+                        "page": index,
+                        "url": f"/files/{record.file_id}/preview/{index}",
+                        "size_bytes": path.stat().st_size,
+                    }
+                    for index, path in enumerate(paths, start=1)
+                ],
             }
-            for index, path in enumerate(paths, start=1)
-        ],
-    }
+    except (PreviewError, StorageError) as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
 
 @app.get("/files/{file_id}/preview/{page}")
@@ -413,11 +431,17 @@ def get_preview_page(
     preview_service = PreviewService(storage)
     try:
         page_number = parse_page_number(page)
-        path = preview_service.preview_path(record, page_number)
-    except PreviewError as exc:
+        lease = storage.lease(record.file_id)
+        lease.__enter__()
+        try:
+            path = preview_service.preview_path(record, page_number)
+        except Exception:
+            lease.__exit__(None, None, None)
+            raise
+    except (PreviewError, StorageError) as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
-    return FileResponse(path, media_type="image/png")
+    return FileResponse(path, media_type="image/png", background=BackgroundTask(lease.__exit__, None, None, None))
 
 
 @app.get("/me/preferences")
@@ -439,11 +463,18 @@ def put_preferences(
 
 @app.get("/history")
 def list_history(
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
     current_user: User = Depends(require_current_user),
     database: Database = Depends(get_database),
     client: CupsClient = Depends(get_cups_client),
 ) -> dict[str, object]:
-    return {"history": refreshed_user_history(database, current_user, client)}
+    return {
+        "history": refreshed_user_history(database, current_user, client, limit=limit, offset=offset),
+        "total": database.count_print_history(current_user.id),
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 @app.get("/history/{history_id}")
@@ -539,9 +570,10 @@ def history_cups_state(job: dict[str, Any] | None) -> str | None:
 def refreshed_user_history(
     database: Database, current_user: User, client: CupsClient,
     history_id: int | None = None,
+    limit: int = 50, offset: int = 0,
 ) -> list[dict[str, Any]]:
     if history_id is None:
-        history = database.list_print_history(current_user.id)
+        history = database.list_print_history(current_user.id, limit, offset)
     else:
         entry = database.get_print_history(current_user.id, history_id)
         history = [entry] if entry is not None else []
@@ -572,7 +604,7 @@ def refreshed_user_history(
     if not changed:
         return history
     if history_id is None:
-        return database.list_print_history(current_user.id)
+        return database.list_print_history(current_user.id, limit, offset)
     refreshed = database.get_print_history(current_user.id, history_id)
     return [refreshed] if refreshed is not None else []
 
