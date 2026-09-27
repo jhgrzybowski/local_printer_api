@@ -1,6 +1,6 @@
 # Troubleshooting
 
-This document explains how to debug the backend, CUPS, Gutenprint, LPD transport, printer queue, and LAN access.
+This document explains how to debug the backend, session authentication, CUPS, Gutenprint, LPD transport, printer queue, and LAN access.
 
 ---
 
@@ -34,6 +34,63 @@ test -S /var/run/cups/cups.sock && echo /var/run/cups/cups.sock
 docker compose exec api ls -l /run/cups/cups.sock
 docker compose exec api python -c "import cups; print('cups ok')"
 ```
+
+---
+
+## Protected endpoint returns 401
+
+`/health`, `/status`, and `/options` work without a session. Upload, preview,
+print, jobs, preferences, history, and `/auth/me` require the
+`local_printer_session` cookie. A 401 from those routes means the cookie is
+missing, expired, or invalid; it does not by itself indicate a CUPS problem.
+
+On a LAN client, use the same backend hostname for login and later requests:
+
+```bash
+export PRINTER_BACKEND="http://192.168.100.99:8000"
+curl -i -c cookies.txt -X POST "$PRINTER_BACKEND/auth/login" \
+  -H "Content-Type: application/json" \
+  -d '{"username":"YOUR_USER","password":"YOUR_PASSWORD"}'
+curl -i -b cookies.txt "$PRINTER_BACKEND/auth/me"
+curl -i -b cookies.txt "$PRINTER_BACKEND/jobs"
+```
+
+If login succeeds but `/auth/me` returns 401, check that the login response
+includes `Set-Cookie`, that the cookie jar contains `local_printer_session`,
+and that subsequent requests use `-b cookies.txt`. The cookie is scoped to
+the backend hostname, so switching between an IP and a `.local` name can
+leave it out. Log in again when the session expires or after logout.
+
+For a browser frontend, send credentialed requests and use an origin allowed
+by `CORS_ALLOWED_ORIGINS`. With the default `SameSite=Lax` cookie over HTTP,
+the frontend and API must be same-site; accessing Vite through `localhost`
+while calling the API at `192.168.100.99` will not send the session cookie.
+Use the LAN hostname or IP for the frontend as described in `ENVIRONMENT.md`.
+If `SESSION_COOKIE_SECURE=true`, use HTTPS so the browser can send the cookie.
+
+Accounts can be created through `/auth/signup` on the LAN. Keep the service
+bound to the trusted LAN; do not expose it to the internet.
+
+---
+
+## Uploaded file or history entry disappeared
+
+The API removes uploads and their previews after `UPLOAD_TTL_DAYS` (7 by
+default) and print history after `HISTORY_TTL_DAYS` (90 by default). Maintenance
+runs hourly in the API process. Active CUPS jobs and files currently in use
+are protected; if CUPS is unavailable, cleanup waits for the next interval.
+
+`GET /history` returns only the newest 50 entries by default. Check
+`total`, `limit`, and `offset`, or request another page:
+
+```bash
+curl -i -b cookies.txt "$PRINTER_BACKEND/history?limit=50&offset=50"
+```
+
+An expired history record cannot be recovered from the API, and its CUPS job
+may no longer appear in the user's API job view even if CUPS retained it.
+Increase the retention settings before expiry if longer access is needed.
+CUPS job retention is configured separately in `cupsd.conf`.
 
 ---
 
