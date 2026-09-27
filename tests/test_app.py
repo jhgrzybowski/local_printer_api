@@ -47,8 +47,17 @@ def test_health_includes_cors_header_for_allowed_origin(client: TestClient) -> N
     assert response.headers["access-control-allow-origin"] == origin
 
 
-def test_files_preflight_includes_cors_headers_for_allowed_origin(client: TestClient) -> None:
-    origin = "http://192.168.100.99:5173"
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "http://192.168.100.99:5173",
+        "http://drukarka.local:5174",
+        "https://drukarka.local",
+    ],
+)
+def test_files_preflight_includes_cors_headers_for_allowed_origin(
+    client: TestClient, origin: str
+) -> None:
 
     response = client.options(
         "/files",
