@@ -10,7 +10,7 @@ from pypdf import PdfWriter
 
 from app.main import app, get_cups_client, get_file_storage
 from app.services.cups_client import CupsClientError, normalize_job
-from app.services.database import Database
+from app.services.database import Database, JobClaim
 from app.services.file_storage import TempFileStorage
 from tests.helpers import signup_user
 
@@ -40,9 +40,16 @@ class FakeCupsClient:
         self.queue = queue or ready_queue()
         self.submissions: list[dict[str, Any]] = []
         self.jobs = {
-            123: normalize_job(123, {"job-name": "active.pdf", "job-state": 5}),
-            456: normalize_job(456, {"job-name": "done.pdf", "job-state": 9}),
-            789: normalize_job(789, {"job-name": "canceled.pdf", "job-state": 7}),
+            job_id: normalize_job(job_id, {
+                "job-name": name, "job-state": state,
+                "job-printer-uri": "ipp://localhost/printers/Canon_MG5350",
+                "time-at-creation": 1000 + job_id,
+                "job-uuid": f"urn:uuid:job-{job_id}",
+            })
+            for job_id, name, state in (
+                (123, "active.pdf", 5), (456, "done.pdf", 9),
+                (789, "canceled.pdf", 7),
+            )
         }
 
     def get_queue(self) -> dict[str, Any]:
@@ -197,6 +204,8 @@ def grant_cups_job(database: Database, job_id: int, user_id: int = 1) -> None:
         applied_options={},
         cups_job_id=job_id,
         warnings=[],
+        job_claim=JobClaim(user_id, job_id, "ipp://localhost/printers/Canon_MG5350",
+                           1000 + job_id, f"urn:uuid:job-{job_id}"),
     )
 
 

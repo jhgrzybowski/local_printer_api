@@ -240,6 +240,7 @@ def normalize_job(job_id: int, attrs: dict[str, Any]) -> dict[str, Any]:
         "reasons": _as_list(attrs.get("job-state-reasons")),
         "printer_uri": attrs.get("job-printer-uri"),
         "created_at": attrs.get("time-at-creation"),
+        "job_uuid": attrs.get("job-uuid"),
         "completed_at": attrs.get("time-at-completed"),
         "is_active": is_active,
         "is_terminal": is_terminal,

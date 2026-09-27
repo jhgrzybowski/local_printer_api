@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -22,6 +24,15 @@ class User:
     display_name: str | None
     created_at: str
     updated_at: str
+
+
+@dataclass(frozen=True)
+class JobClaim:
+    user_id: int
+    job_id: int
+    printer_uri: str
+    created_at: int
+    job_uuid: str | None
 
 
 class Database:
@@ -101,6 +112,14 @@ class Database:
                     ON print_history(user_id, created_at DESC);
                 """
             )
+            columns = {row["name"] for row in connection.execute("PRAGMA table_info(print_history)")}
+            for name, definition in (
+                ("cups_printer_uri", "TEXT"),
+                ("cups_created_at", "INTEGER"),
+                ("cups_job_uuid", "TEXT"),
+            ):
+                if name not in columns:
+                    connection.execute(f"ALTER TABLE print_history ADD COLUMN {name} {definition}")
 
     def create_user(
         self,
@@ -251,6 +270,7 @@ class Database:
         cups_job_id: int,
         warnings: list[str],
         status: str = "submitted",
+        job_claim: JobClaim | None = None,
     ) -> int:
         now = utc_now()
         with self.connect() as connection:
@@ -259,9 +279,10 @@ class Database:
                 INSERT INTO print_history (
                     user_id, file_id, original_filename, detected_mime, size_bytes,
                     page_count, requested_options_json, applied_options_json,
-                    cups_job_id, warnings_json, status, created_at, updated_at
+                    cups_job_id, warnings_json, status, created_at, updated_at,
+                    cups_printer_uri, cups_created_at, cups_job_uuid
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     user_id,
@@ -277,6 +298,9 @@ class Database:
                     status,
                     now,
                     now,
+                    job_claim.printer_uri if job_claim else None,
+                    job_claim.created_at if job_claim else None,
+                    job_claim.job_uuid if job_claim else None,
                 ),
             )
             return int(cursor.lastrowid)
@@ -306,30 +330,54 @@ class Database:
             ).fetchone()
         return history_from_row(row) if row is not None else None
 
-    def user_has_cups_job(self, user_id: int, cups_job_id: int) -> bool:
-        with self.connect() as connection:
-            row = connection.execute(
-                """
-                SELECT 1
-                FROM print_history
-                WHERE user_id = ? AND cups_job_id = ?
-                LIMIT 1
-                """,
-                (user_id, cups_job_id),
-            ).fetchone()
-        return row is not None
-
-    def list_user_cups_job_ids(self, user_id: int) -> set[int]:
+    def list_job_claims(self, user_id: int) -> list[JobClaim]:
         with self.connect() as connection:
             rows = connection.execute(
                 """
-                SELECT DISTINCT cups_job_id
+                SELECT user_id, cups_job_id, cups_printer_uri, cups_created_at, cups_job_uuid
                 FROM print_history
-                WHERE user_id = ?
+                WHERE user_id = ? AND cups_printer_uri IS NOT NULL
+                  AND cups_created_at IS NOT NULL
                 """,
                 (user_id,),
             ).fetchall()
-        return {int(row["cups_job_id"]) for row in rows}
+        claims = [
+            JobClaim(int(row["user_id"]), int(row["cups_job_id"]),
+                     str(row["cups_printer_uri"]), int(row["cups_created_at"]),
+                     row["cups_job_uuid"])
+            for row in rows
+        ]
+        return claims + self.list_fallback_job_claims(user_id)
+
+    def save_fallback_job_claim(self, claim: JobClaim) -> None:
+        """Save a small ownership record when the larger history write fails."""
+        directory = self.path.parent / "job-claims"
+        directory.mkdir(parents=True, exist_ok=True)
+        target = directory / f"{claim.user_id}-{claim.job_id}.json"
+        payload = json.dumps(claim.__dict__, sort_keys=True)
+        fd, temporary = tempfile.mkstemp(dir=directory, prefix=".claim-")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, target)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+
+    def list_fallback_job_claims(self, user_id: int) -> list[JobClaim]:
+        directory = self.path.parent / "job-claims"
+        claims = []
+        for path in directory.glob(f"{user_id}-*.json"):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                claim = JobClaim(**data)
+                if claim.user_id == user_id:
+                    claims.append(claim)
+            except (OSError, ValueError, TypeError):
+                continue
+        return claims
 
 
 def user_from_row(row: sqlite3.Row) -> User:

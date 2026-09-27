@@ -18,6 +18,10 @@ from tests.helpers import signup_user
 class FakeCupsClient:
     queue_name = "Canon_MG5350"
 
+    def __init__(self) -> None:
+        self.active_override: dict[str, Any] = {}
+        self.actions: list[tuple[str, int]] = []
+
     def get_queue(self) -> dict[str, Any]:
         return {
             "name": "Canon_MG5350",
@@ -48,7 +52,11 @@ class FakeCupsClient:
             "is_terminal": False,
             "can_cancel": True,
             "can_forget": False,
+            "printer_uri": "ipp://localhost/printers/Canon_MG5350",
+            "created_at": 1321,
+            "job_uuid": "urn:uuid:job-321",
         }
+        active_job.update(self.active_override)
         terminal_job = {
             "job_id": 654,
             "name": "other-history.pdf",
@@ -58,6 +66,9 @@ class FakeCupsClient:
             "is_terminal": True,
             "can_cancel": False,
             "can_forget": True,
+            "printer_uri": "ipp://localhost/printers/Canon_MG5350",
+            "created_at": 1654,
+            "job_uuid": "urn:uuid:job-654",
         }
         if scope == "active":
             return [active_job]
@@ -69,6 +80,7 @@ class FakeCupsClient:
         return next((job for job in self.list_jobs("all") if job["job_id"] == job_id), None)
 
     def cancel_job(self, job_id: int) -> dict[str, Any]:
+        self.actions.append(("cancel", job_id))
         return {
             "job_id": job_id,
             "cancelled": True,
@@ -76,6 +88,10 @@ class FakeCupsClient:
             "can_forget": False,
             "message": "Job cancellation was submitted.",
         }
+
+    def forget_job(self, job_id: int) -> dict[str, Any]:
+        self.actions.append(("forget", job_id))
+        return {"job_id": job_id, "forgotten": True, "method": "pycups-purge-job"}
 
 
 class FailingHistoryDatabase(Database):
@@ -261,6 +277,82 @@ def test_print_still_returns_job_id_when_history_insert_fails(tmp_path: Path) ->
     assert [job["job_id"] for job in jobs.json()["jobs"]] == [321]
     assert job.status_code == 200
     assert cancel.status_code == 200
+
+
+def test_failed_history_claim_survives_database_recreation(tmp_path: Path) -> None:
+    storage = TempFileStorage(tmp_path / "files", max_upload_mb=1)
+    database_path = tmp_path / "history.db"
+    failing_database = FailingHistoryDatabase(database_path)
+    cups_client = FakeCupsClient()
+    app.dependency_overrides.clear()
+    app.dependency_overrides[get_file_storage] = lambda: storage
+    app.dependency_overrides[get_cups_client] = lambda: cups_client
+    app.dependency_overrides[get_database] = lambda: failing_database
+
+    with TestClient(app) as client:
+        signup_user(client, username="alice")
+        upload = client.post("/files", files={"file": ("x.pdf", make_pdf(), "application/pdf")})
+        response = client.post("/print", json={"file_id": upload.json()["file_id"], "options": {}})
+        assert response.status_code == 200
+        assert response.json()["history_id"] is None
+
+        app.dependency_overrides[get_database] = lambda: Database(database_path)
+        after_restart = client.get("/jobs/321")
+
+    app.dependency_overrides.clear()
+    assert after_restart.status_code == 200
+
+
+def test_reused_job_id_and_other_queue_do_not_authorize_actions(tmp_path: Path) -> None:
+    storage = TempFileStorage(tmp_path / "files", max_upload_mb=1)
+    cups_client = FakeCupsClient()
+    app.dependency_overrides.clear()
+    app.dependency_overrides[get_file_storage] = lambda: storage
+    app.dependency_overrides[get_cups_client] = lambda: cups_client
+
+    with TestClient(app) as alice:
+        signup_user(alice, username="alice")
+        upload = alice.post("/files", files={"file": ("owned.pdf", make_pdf(), "application/pdf")})
+        response = alice.post("/print", json={"file_id": upload.json()["file_id"], "options": {}})
+        assert response.status_code == 200
+
+        cups_client.active_override = {"created_at": 2321, "job_uuid": "urn:uuid:reused"}
+        assert alice.get("/jobs").json()["jobs"] == []
+        assert alice.get("/jobs/321").status_code == 404
+        assert alice.delete("/jobs/321").status_code == 404
+        assert alice.post("/jobs/321/forget").status_code == 404
+
+        cups_client.active_override = {"job_uuid": "urn:uuid:reused-same-second"}
+        assert alice.delete("/jobs/321").status_code == 404
+
+        cups_client.active_override = {
+            "printer_uri": "ipp://localhost/printers/Other_Printer",
+        }
+        assert alice.get("/jobs").json()["jobs"] == []
+        assert alice.delete("/jobs/321").status_code == 404
+
+    app.dependency_overrides.clear()
+    assert cups_client.actions == []
+
+
+def test_legacy_history_row_does_not_authorize_job(
+    isolated_database: Database,
+) -> None:
+    cups_client = FakeCupsClient()
+    app.dependency_overrides.clear()
+    app.dependency_overrides[get_cups_client] = lambda: cups_client
+    with TestClient(app) as alice:
+        user_id = signup_user(alice, username="alice")["user"]["id"]
+        isolated_database.insert_print_history(
+            user_id=user_id, file_id="old", original_filename="old.pdf",
+            detected_mime="application/pdf", size_bytes=1, page_count=1,
+            requested_options={}, applied_options={}, cups_job_id=321, warnings=[],
+        )
+        assert alice.get("/jobs/321").status_code == 404
+        assert alice.delete("/jobs/321").status_code == 404
+        assert alice.get("/history").json()["history"][0]["cups_job_id"] == 321
+    app.dependency_overrides.clear()
+    assert cups_client.actions == []
 
 
 def test_uploaded_files_are_user_scoped_for_preview_and_print(tmp_path: Path) -> None:
