@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,7 @@ JOB_REQUESTED_ATTRIBUTES = ["all"]
 
 ACTIVE_JOB_STATES = {3, 4, 5, 6}
 TERMINAL_JOB_STATES = {7, 8, 9}
+LOGGER = logging.getLogger(__name__)
 
 
 class CupsClient:
@@ -56,6 +58,35 @@ class CupsClient:
             return {"name": self.queue_name, "exists": False, "attributes": {}}
 
         attributes = dict(printers[self.queue_name])
+        printer_uris = attributes.get("printer-uri-supported")
+        if isinstance(printer_uris, str):
+            printer_uri = printer_uris
+        elif isinstance(printer_uris, list | tuple):
+            printer_uri = next(
+                (uri for uri in printer_uris if isinstance(uri, str) and uri),
+                None,
+            )
+        else:
+            printer_uri = None
+
+        # CUPS getPrinters() omits this attribute on some versions. Query it
+        # explicitly because print readiness must distinguish false from unknown.
+        if printer_uri:
+            try:
+                attributes.update(
+                    connection.getPrinterAttributes(
+                        uri=printer_uri,
+                        requested_attributes=["printer-is-accepting-jobs"],
+                    )
+                )
+            except Exception as exc:
+                # Keep readiness unknown if CUPS cannot provide the attribute.
+                LOGGER.warning(
+                    "Could not query printer-is-accepting-jobs for %s: %s",
+                    self.queue_name,
+                    exc,
+                )
+
         return {
             "name": self.queue_name,
             "exists": True,
