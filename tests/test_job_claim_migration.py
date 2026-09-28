@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import sqlite3
+import shutil
 from pathlib import Path
+from threading import Barrier
 
-from app.services.database import Database
+from app.services.database import Database, JobClaim
 
 
 def test_existing_history_schema_gains_nullable_identity_columns(tmp_path: Path) -> None:
@@ -11,6 +14,17 @@ def test_existing_history_schema_gains_nullable_identity_columns(tmp_path: Path)
     with sqlite3.connect(path) as connection:
         connection.executescript(
             """
+            CREATE TABLE users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL UNIQUE,
+                display_name TEXT,
+                password_hash TEXT NOT NULL,
+                password_salt TEXT NOT NULL,
+                password_iterations INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO users VALUES (1, 'legacy', NULL, 'hash', 'salt', 1, '2026-01-01', '2026-01-01');
             CREATE TABLE print_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
@@ -41,6 +55,67 @@ def test_existing_history_schema_gains_nullable_identity_columns(tmp_path: Path)
         old_row = connection.execute("SELECT * FROM print_history WHERE id = 1").fetchone()
 
     assert {"cups_printer_uri", "cups_created_at", "cups_job_uuid"} <= columns
+    with database.connect() as connection:
+        assert "identity_id" in {row["name"] for row in connection.execute("PRAGMA table_info(users)")}
+        identity_id = connection.execute("SELECT identity_id FROM users WHERE id = 1").fetchone()[0]
+        assert identity_id
     assert old_row is not None
     assert old_row["cups_printer_uri"] is None
     assert database.list_job_claims(1) == []
+
+
+def test_fallback_claims_are_bound_to_database_identity(tmp_path: Path) -> None:
+    path = tmp_path / "app.db"
+    original = Database(path)
+    original_id = original.database_id()
+    owner = original.create_user("owner", None, "hash", "salt", 1)
+    claim = JobClaim(owner.id, 321, "ipp://localhost/printers/Canon_MG5350", 1321, "job-uuid")
+    original.save_fallback_job_claim(claim, owner.identity_id)
+    assert Database(path).list_fallback_job_claims(owner.id) == [claim]
+
+    # A different DB_PATH in the same directory must not inherit the claim.
+    assert Database(tmp_path / "other.db").list_fallback_job_claims(owner.id) == []
+
+    # Recreating the original path also starts a fresh identity and user IDs.
+    path.unlink()
+    replacement = Database(path)
+    assert replacement.database_id() != original_id
+    assert replacement.list_fallback_job_claims(owner.id) == []
+
+
+def test_restored_database_does_not_transfer_fallback_claim_to_reused_user_id(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "app.db"
+    snapshot = tmp_path / "snapshot.db"
+    database = Database(path)
+    database.create_user("existing", None, "hash", "salt", 1)
+    shutil.copy2(path, snapshot)
+    former = database.create_user("former", None, "hash", "salt", 1)
+    claim = JobClaim(former.id, 321, "ipp://localhost/printers/Canon_MG5350", 1321, "job-uuid")
+    database.save_fallback_job_claim(claim, former.identity_id)
+    assert database.list_fallback_job_claims(former.id) == [claim]
+
+    shutil.copy2(snapshot, path)
+    restored = Database(path)
+    newcomer = restored.create_user("newcomer", None, "hash", "salt", 1)
+    assert newcomer.id == former.id
+    assert newcomer.identity_id != former.identity_id
+    assert restored.list_fallback_job_claims(newcomer.id) == []
+
+
+def test_concurrent_startup_serializes_identity_column_migration(tmp_path: Path) -> None:
+    path = tmp_path / "concurrent.db"
+    start = Barrier(8)
+
+    def initialize() -> str:
+        start.wait(timeout=5)
+        return Database(path).database_id()
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        identities = list(pool.map(lambda _: initialize(), range(8)))
+
+    assert len(set(identities)) == 1
+    with Database(path).connect() as connection:
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(print_history)")}
+    assert {"cups_printer_uri", "cups_created_at", "cups_job_uuid"} <= columns

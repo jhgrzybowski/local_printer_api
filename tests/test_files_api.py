@@ -9,6 +9,7 @@ from pypdf import PdfWriter
 
 from app.main import app, get_file_storage
 from app.services.file_storage import TempFileStorage, sanitize_filename
+from app.services.preview import _save_png_atomic
 from tests.helpers import signup_user
 
 
@@ -128,6 +129,49 @@ def test_pdf_preview_list_allows_pages_not_rendered_yet(
     ]
 
 
+def test_pdf_preview_renders_only_requested_page(
+    file_client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from PIL import Image
+    import pdf2image
+
+    rendered_pages: list[int] = []
+
+    def render_page(source: str, **kwargs: object) -> list[Image.Image]:
+        assert Path(source).exists()
+        assert kwargs["first_page"] == kwargs["last_page"]
+        rendered_pages.append(int(kwargs["first_page"]))
+        return [Image.new("RGB", (4, 4), color="white")]
+
+    monkeypatch.setattr(pdf2image, "convert_from_path", render_page)
+    upload_response = file_client.post(
+        "/files",
+        files={"file": ("three-pages.pdf", make_pdf(3), "application/pdf")},
+    )
+    assert upload_response.status_code == 200
+    file_id = upload_response.json()["file_id"]
+    preview_dir = tmp_path / "previews" / file_id
+
+    metadata = file_client.get(f"/files/{file_id}/preview")
+    assert metadata.status_code == 200
+    assert [page["page"] for page in metadata.json()["pages"]] == [1, 2, 3]
+    assert all("size_bytes" not in page for page in metadata.json()["pages"])
+    assert rendered_pages == []
+    assert not preview_dir.exists()
+
+    page = file_client.get(f"/files/{file_id}/preview/2")
+    assert page.status_code == 200
+    assert page.headers["content-type"] == "image/png"
+    assert rendered_pages == [2]
+    assert sorted(path.name for path in preview_dir.iterdir()) == ["page-2.png"]
+
+    assert file_client.get(f"/files/{file_id}/preview/2").status_code == 200
+    assert rendered_pages == [2]
+    metadata = file_client.get(f"/files/{file_id}/preview")
+    assert metadata.json()["pages"][1]["size_bytes"] == len(page.content)
+    assert "size_bytes" not in metadata.json()["pages"][0]
+
+
 def test_unknown_file_id_returns_404(file_client: TestClient) -> None:
     response = file_client.get("/files/not-a-real-file/preview")
 
@@ -151,3 +195,19 @@ def test_invalid_preview_page_returns_400(file_client: TestClient) -> None:
 def test_storage_sanitizes_filenames() -> None:
     assert sanitize_filename("../../bad name.pdf") == "bad_name.pdf"
     assert sanitize_filename(r"..\..\nested\file.jpg") == "file.jpg"
+
+
+def test_preview_is_published_only_after_png_write_completes(tmp_path: Path) -> None:
+    destination = tmp_path / "page-1.png"
+
+    class SlowImage:
+        def save(self, path: Path, image_format: str) -> None:
+            assert image_format == "PNG"
+            path.write_bytes(b"partial")
+            assert not destination.exists()
+            path.write_bytes(b"complete")
+
+    _save_png_atomic(SlowImage(), destination)
+
+    assert destination.read_bytes() == b"complete"
+    assert not list(tmp_path.glob(".page-1-*.png"))

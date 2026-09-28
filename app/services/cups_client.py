@@ -13,6 +13,10 @@ class CupsClientError(RuntimeError):
     """Raised when CUPS cannot be reached or queried."""
 
 
+class CupsJobChangedError(CupsClientError):
+    """The numeric job ID no longer identifies the authorized CUPS job."""
+
+
 JOB_SCOPE_TO_CUPS = {
     "active": "not-completed",
     "completed": "completed",
@@ -60,10 +64,26 @@ class CupsClient:
         }
 
     def get_option_capabilities(self) -> dict[str, set[str]]:
-        lpoptions_capabilities = self._get_lpoptions_capabilities()
-        if lpoptions_capabilities:
-            return lpoptions_capabilities
-        return self._get_ppd_capabilities()
+        # lpoptions can fail for a missing queue without telling us whether CUPS
+        # itself is available. Check the queue before accepting either source.
+        try:
+            printers = self._connection().getPrinters()
+        except Exception as exc:
+            raise CupsClientError(f"CUPS queue query failed: {exc}") from exc
+        if self.queue_name not in printers:
+            raise CupsClientError(f"CUPS queue {self.queue_name} does not exist")
+
+        errors: list[str] = []
+        for source in (self._get_lpoptions_capabilities, self._get_ppd_capabilities):
+            try:
+                capabilities = source()
+            except CupsClientError as exc:
+                errors.append(str(exc))
+                continue
+            if capabilities:
+                return capabilities
+            errors.append(f"{source.__name__} returned no options")
+        raise CupsClientError("CUPS capability detection failed: " + "; ".join(errors))
 
     def _get_lpoptions_capabilities(self) -> dict[str, set[str]]:
         try:
@@ -74,11 +94,11 @@ class CupsClient:
                 text=True,
                 timeout=8,
             )
-        except (OSError, subprocess.TimeoutExpired):
-            return {}
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise CupsClientError(f"lpoptions failed: {exc}") from exc
 
         if completed.returncode != 0:
-            return {}
+            raise CupsClientError(f"lpoptions failed: {completed.stderr.strip() or completed.returncode}")
         return parse_lpoptions(completed.stdout)
 
     def _get_ppd_capabilities(self) -> dict[str, set[str]]:
@@ -86,8 +106,8 @@ class CupsClient:
             connection = self._connection()
             ppd_path = Path(connection.getPPD(self.queue_name))
             return parse_ppd_options(ppd_path.read_text(encoding="utf-8", errors="replace"))
-        except Exception:
-            return {}
+        except Exception as exc:
+            raise CupsClientError(f"CUPS PPD query failed: {exc}") from exc
 
     def print_file(self, path: Path, title: str, options: dict[str, str]) -> int:
         try:
@@ -109,8 +129,11 @@ class CupsClient:
         return [normalize_job(job_id, attrs) for job_id, attrs in jobs.items()]
 
     def get_job(self, job_id: int) -> dict[str, Any] | None:
+        connection = self._connection()
+        return self._get_job_from_connection(connection, job_id)
+
+    def _get_job_from_connection(self, connection: Any, job_id: int) -> dict[str, Any] | None:
         try:
-            connection = self._connection()
             attrs = connection.getJobAttributes(job_id)
         except Exception as exc:
             message = str(exc).lower()
@@ -119,8 +142,12 @@ class CupsClient:
             raise CupsClientError(f"CUPS job query failed: {exc}") from exc
         return normalize_job(job_id, attrs)
 
-    def cancel_job(self, job_id: int) -> dict[str, Any]:
-        job = self.get_job(job_id)
+    def cancel_job(
+        self, job_id: int, expected_job: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        connection = self._connection()
+        job = self._get_job_from_connection(connection, job_id)
+        self._require_same_job(expected_job, job)
         if job is None:
             return {
                 "job_id": job_id,
@@ -133,7 +160,6 @@ class CupsClient:
             return cancel_not_possible_response(job)
 
         try:
-            connection = self._connection()
             connection.cancelJob(job_id)
         except Exception as exc:
             message = str(exc).lower()
@@ -165,8 +191,12 @@ class CupsClient:
             "message": "Job cancellation was submitted.",
         }
 
-    def forget_job(self, job_id: int) -> dict[str, Any]:
-        job = self.get_job(job_id)
+    def forget_job(
+        self, job_id: int, expected_job: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        connection = self._connection()
+        job = self._get_job_from_connection(connection, job_id)
+        self._require_same_job(expected_job, job)
         if job is None:
             return {
                 "job_id": job_id,
@@ -183,7 +213,6 @@ class CupsClient:
             }
 
         try:
-            connection = self._connection()
             connection.cancelJob(job_id, purge_job=True)
         except TypeError as exc:
             return {
@@ -209,6 +238,19 @@ class CupsClient:
             }
 
         return {"job_id": job_id, "forgotten": True, "method": "pycups-purge-job"}
+
+    @staticmethod
+    def _require_same_job(
+        expected_job: dict[str, Any] | None, current_job: dict[str, Any] | None,
+    ) -> None:
+        if expected_job is None:
+            return
+        identity_fields = ("job_id", "printer_uri", "created_at", "job_uuid")
+        if current_job is None or any(
+            expected_job.get(field) != current_job.get(field)
+            for field in identity_fields
+        ):
+            raise CupsJobChangedError("CUPS job identity changed before the action")
 
 
 JOB_STATE_LABELS = {

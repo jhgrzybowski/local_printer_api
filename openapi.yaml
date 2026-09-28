@@ -524,9 +524,10 @@ paths:
       tags: [History]
       summary: List print history for the current user
       description: >-
-        Refreshes nonterminal history from matching CUPS jobs. If CUPS is unavailable
-        or a job has been purged, returns its last known status. Results are
-        newest first and paginated; old entries may expire under HISTORY_TTL_DAYS.
+        Refreshes nonterminal history from matching CUPS jobs and recovers saved
+        purge markers. If CUPS is unavailable or a job disappears without a marker,
+        returns its last known status. Results are newest first and paginated;
+        old entries may expire under HISTORY_TTL_DAYS.
       operationId: listHistory
       security:
         - SessionCookieAuth: []
@@ -561,8 +562,9 @@ paths:
       tags: [History]
       summary: Get one print history entry for the current user
       description: >-
-        Refreshes nonterminal history from matching CUPS jobs. If CUPS is unavailable
-        or a job has been purged, returns its last known status.
+        Refreshes nonterminal history from matching CUPS jobs and recovers saved
+        purge markers. If CUPS is unavailable or a job disappears without a marker,
+        returns its last known status.
       operationId: getHistoryEntry
       security:
         - SessionCookieAuth: []
@@ -768,6 +770,7 @@ components:
         - exists
         - state
         - enabled
+        - ready_for_print
         - reasons
         - cups
       properties:
@@ -788,8 +791,15 @@ components:
           type:
             - boolean
             - "null"
+          description: Raw CUPS printer-is-accepting-jobs value; may remain true when the printer is offline.
         enabled:
+          type:
+            - boolean
+            - "null"
+          description: Whether the CUPS printer-state is not stopped; does not imply printer reachability.
+        ready_for_print:
           type: boolean
+          description: Whether this API currently allows print submission based on CUPS state, queue acceptance, and the network probe. Recheck at submission time because status can change.
         message:
           type: string
         device_uri:
@@ -823,10 +833,16 @@ components:
         supported:
           type: boolean
         choices:
+          description: Raw CUPS choices when raw_option is set; API choices when mapped choices use different CUPS options.
           type: array
           items:
             type: string
         mapping:
+          type: object
+          additionalProperties:
+            type: string
+        option_mapping:
+          description: CUPS option name selected for each API choice when choices use different backends.
           type: object
           additionalProperties:
             type: string
@@ -922,6 +938,7 @@ components:
         size_bytes:
           type: integer
           minimum: 0
+          description: Present after the preview page has been rendered
 
     PreviewResponse:
       type: object
@@ -1045,8 +1062,6 @@ components:
       properties:
         job_id:
           type: integer
-        queue:
-          type: string
         name:
           type: string
         state:
@@ -1062,7 +1077,13 @@ components:
         user:
           type: string
         printer_uri:
-          type: string
+          type:
+            - string
+            - "null"
+        job_uuid:
+          type:
+            - string
+            - "null"
         created_at:
           oneOf:
             - type: integer
@@ -1216,8 +1237,9 @@ components:
           description: >-
             Last verified CUPS state, or submitted before verification. A successful
             cancel request sets cancel-requested until CUPS reports a terminal state.
-            Successful purge sets forgotten. If a job disappears from CUPS, the
-            last known state is retained.
+            Successful purge sets forgotten, including recovery from a saved purge
+            marker. If a job disappears from CUPS without a marker, the last known
+            state is retained.
           example: submitted
         created_at:
           type: string

@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
+import yaml
 from fastapi import (
     Body,
     Depends,
@@ -23,7 +24,12 @@ from starlette.background import BackgroundTask
 from pydantic import BaseModel
 
 from app.models.print_options import PrintRequest
-from app.services.cups_client import JOB_SCOPE_TO_CUPS, CupsClient, CupsClientError
+from app.services.cups_client import (
+    JOB_SCOPE_TO_CUPS,
+    CupsClient,
+    CupsClientError,
+    CupsJobChangedError,
+)
 from app.services.auth import AuthError, AuthService, LoginSession, public_user
 from app.services.database import Database, JobClaim, User
 from app.services.file_storage import StoredFile, StorageError, TempFileStorage
@@ -99,10 +105,20 @@ def openapi_yaml() -> FileResponse:
     return FileResponse(OPENAPI_YAML_PATH, media_type="application/yaml")
 
 
+def canonical_openapi() -> dict[str, Any]:
+    """Serve the maintained YAML spec through FastAPI's JSON OpenAPI route."""
+    if not OPENAPI_YAML_PATH.exists():
+        raise HTTPException(status_code=404, detail="openapi.yaml not found")
+    return yaml.safe_load(OPENAPI_YAML_PATH.read_text(encoding="utf-8"))
+
+
+app.openapi = canonical_openapi
+
+
 @app.get("/docs", include_in_schema=False)
 def swagger_docs() -> HTMLResponse:
     return get_swagger_ui_html(
-        openapi_url="/openapi.yaml",
+        openapi_url="/openapi.json",
         title="Local Printer API Docs",
     )
 
@@ -273,7 +289,9 @@ def submit_and_record_print(
         fallback_saved = False
         if job_claim is not None:
             try:
-                database.save_fallback_job_claim(job_claim, file_id=record.file_id)
+                database.save_fallback_job_claim(
+                    job_claim, current_user.identity_id, file_id=record.file_id,
+                )
                 fallback_saved = True
             except Exception:
                 LOGGER.exception("Could not save fallback ownership for CUPS job %s", result["job_id"])
@@ -356,15 +374,25 @@ def cancel_job(
     try:
         job = client.get_job(job_id)
         require_user_cups_job(database, current_user, job, client.queue_name)
-        result = client.cancel_job(job_id)
+        result = client.cancel_job(job_id, expected_job=job)
+    except CupsJobChangedError as exc:
+        raise HTTPException(status_code=404, detail="Job not found") from exc
     except CupsClientError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     claim = claim_for_job(current_user.id, job, client.queue_name)
     if claim is not None:
         if result.get("cancelled"):
-            database.update_print_history_status_for_claim(claim, "cancel-requested")
-        elif history_cups_state(job) is not None:
-            database.update_print_history_status_for_claim(claim, history_cups_state(job))
+            persist_history_status_after_action(database, claim, "cancel-requested")
+        else:
+            try:
+                current_job = client.get_job(job_id)
+            except CupsClientError:
+                LOGGER.exception("Could not refresh CUPS job %s after cancellation attempt", job_id)
+            else:
+                if current_job is not None and claim_matches_job(claim, current_job, client.queue_name):
+                    state = history_cups_state(current_job)
+                    if state is not None:
+                        persist_history_status_after_action(database, claim, state)
     return result
 
 
@@ -378,7 +406,9 @@ def forget_job(
     try:
         job = client.get_job(job_id)
         require_user_cups_job(database, current_user, job, client.queue_name)
-        result = client.forget_job(job_id)
+        result = client.forget_job(job_id, expected_job=job)
+    except CupsJobChangedError as exc:
+        raise HTTPException(status_code=404, detail="Job not found") from exc
     except CupsClientError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
@@ -386,7 +416,15 @@ def forget_job(
         raise HTTPException(status_code=409, detail=result)
     claim = claim_for_job(current_user.id, job, client.queue_name)
     if claim is not None:
-        database.update_print_history_status_for_claim(claim, "forgotten")
+        try:
+            database.save_forgotten_job_marker(claim)
+        except Exception:
+            LOGGER.exception("Failed to save purge marker for CUPS job %s", claim.job_id)
+        if persist_history_status_after_action(database, claim, "forgotten"):
+            try:
+                database.remove_forgotten_job_marker(claim)
+            except Exception:
+                LOGGER.exception("Failed to remove purge marker for CUPS job %s", claim.job_id)
     return result
 
 
@@ -519,6 +557,8 @@ def get_user_file_record(
     current_user: User,
 ) -> StoredFile:
     record = storage.get_record(file_id)
+    # Legacy unowned uploads must be assigned by a local operator. Return the
+    # same 404 as an absent or other user's file to avoid disclosing file IDs.
     if record is None or record.owner_user_id != current_user.id:
         raise HTTPException(status_code=404, detail="File not found")
     return record
@@ -548,11 +588,17 @@ def claim_for_job(user_id: int, job: dict[str, Any] | None, queue_name: str) -> 
     if isinstance(created_at, bool) or created <= 0:
         return None
     uuid = job.get("job_uuid")
+    if not uuid:
+        return None
     return JobClaim(user_id, int(job["job_id"]), printer_uri, created,
-                    str(uuid) if uuid else None)
+                    str(uuid))
 
 
 def claim_matches_job(claim: JobClaim, job: dict[str, Any], queue_name: str) -> bool:
+    # Queue ID and creation time can recur after CUPS spool state is reset.
+    # Only the UUID makes a stored claim safe to reuse for later requests.
+    if not claim.job_uuid:
+        return False
     actual = claim_for_job(claim.user_id, job, queue_name)
     return actual is not None and (
         actual.job_id == claim.job_id
@@ -579,11 +625,27 @@ def history_cups_state(job: dict[str, Any] | None) -> str | None:
     return state if isinstance(state, str) and state in HISTORY_CUPS_STATES else None
 
 
+def persist_history_status_after_action(database: Database, claim: JobClaim, status: str) -> bool:
+    try:
+        database.update_print_history_status_for_claim(claim, status)
+    except Exception:
+        LOGGER.exception(
+            "Failed to persist print history status %s for CUPS job %s",
+            status, claim.job_id,
+        )
+        return False
+    return True
+
+
 def refreshed_user_history(
     database: Database, current_user: User, client: CupsClient,
     history_id: int | None = None,
     limit: int = 50, offset: int = 0,
 ) -> list[dict[str, Any]]:
+    try:
+        database.recover_forgotten_job_markers(current_user.id)
+    except Exception:
+        LOGGER.exception("Failed to recover purge markers for user %s", current_user.id)
     if history_id is None:
         history = database.list_print_history(current_user.id, limit, offset)
     else:
@@ -611,8 +673,15 @@ def refreshed_user_history(
         job = jobs.get(claim.job_id)
         state = history_cups_state(job)
         if job is not None and state is not None and claim_matches_job(claim, job, client.queue_name):
-            database.update_print_history_status_for_claim(claim, state)
-            changed = True
+            try:
+                database.update_print_history_status_for_claim(claim, state)
+            except Exception:
+                LOGGER.exception(
+                    "Failed to persist refreshed print history status %s for CUPS job %s",
+                    state, claim.job_id,
+                )
+            else:
+                changed = True
     if not changed:
         return history
     if history_id is None:

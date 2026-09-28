@@ -1,17 +1,21 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from pathlib import Path
+from threading import Barrier
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
-from pypdf import PdfWriter
+from pypdf import PdfReader, PdfWriter
 
 from app.main import app, get_cups_client, get_file_storage
+from app.models.print_options import PrintOptions
 from app.services.cups_client import CupsClientError, normalize_job
 from app.services.database import Database, JobClaim
-from app.services.file_storage import TempFileStorage
+from app.services.file_storage import StoredFile, TempFileStorage
+from app.services.print_service import PrintRequestError, submit_print_job
 from tests.helpers import signup_user
 
 
@@ -79,7 +83,10 @@ class FakeCupsClient:
     def get_job(self, job_id: int) -> dict[str, Any] | None:
         return self.jobs.get(job_id)
 
-    def cancel_job(self, job_id: int) -> dict[str, Any]:
+    def cancel_job(
+        self, job_id: int, expected_job: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        assert expected_job is not None and expected_job["job_id"] == job_id
         job = self.get_job(job_id)
         if job is None:
             return {
@@ -105,7 +112,10 @@ class FakeCupsClient:
             "message": "Job cancellation was submitted.",
         }
 
-    def forget_job(self, job_id: int) -> dict[str, Any]:
+    def forget_job(
+        self, job_id: int, expected_job: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        assert expected_job is not None and expected_job["job_id"] == job_id
         job = self.get_job(job_id)
         if job is None:
             return {
@@ -204,6 +214,38 @@ def grant_cups_job(database: Database, job_id: int, user_id: int = 1) -> None:
     )
 
 
+def test_job_without_uuid_cannot_be_managed_from_durable_claim(
+    client: TestClient, isolated_database: Database,
+) -> None:
+    cups = FakeCupsClient()
+    cups.jobs[123]["job_uuid"] = None
+    app.dependency_overrides[get_cups_client] = lambda: cups
+    user_id = 1
+    isolated_database.insert_print_history(
+        user_id=user_id, file_id="uuidless-file", original_filename="job.pdf",
+        detected_mime="application/pdf", size_bytes=1, page_count=1,
+        requested_options={}, applied_options={}, cups_job_id=123, warnings=[],
+        job_claim=JobClaim(user_id, 123, "ipp://localhost/printers/Canon_MG5350", 1123, None),
+    )
+
+    assert client.get("/jobs/123").status_code == 404
+    assert client.delete("/jobs/123").status_code == 404
+    assert client.post("/jobs/123/forget").status_code == 404
+    assert all(job["job_id"] != 123 for job in client.get("/jobs").json()["jobs"])
+
+
+def test_print_without_cups_uuid_warns_management_is_unavailable(client: TestClient) -> None:
+    cups = FakeCupsClient()
+    cups.jobs[123]["job_uuid"] = None
+    app.dependency_overrides[get_cups_client] = lambda: cups
+    file_id = upload_pdf(client)
+
+    response = client.post("/print", json={"file_id": file_id, "options": {}})
+
+    assert response.status_code == 200
+    assert any("job management is unavailable" in warning for warning in response.json()["warnings"])
+
+
 def test_print_pdf_with_mocked_cups(client: TestClient) -> None:
     file_id = upload_pdf(client, 3)
 
@@ -229,6 +271,59 @@ def test_print_pdf_with_mocked_cups(client: TestClient) -> None:
     assert body["applied_options"]["PageSize"] == "A4"
     assert body["unsupported_options"] == []
     assert any("page order" in warning for warning in body["warnings"])
+
+
+def test_concurrent_page_ranges_spool_their_own_pdf(storage: TempFileStorage) -> None:
+    record = StoredFile("test-file-id-12345", "print.pdf", "application/pdf", 0, 2, True)
+    storage.files_dir.mkdir(parents=True)
+    writer = PdfWriter()
+    writer.add_blank_page(width=72, height=72)
+    writer.add_blank_page(width=144, height=72)
+    with storage.file_path(record.file_id).open("wb") as output:
+        writer.write(output)
+
+    class ConcurrentCupsClient(FakeCupsClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.ready_to_spool = Barrier(2)
+            self.page_widths: dict[str, float] = {}
+            self.paths: list[Path] = []
+
+        def print_file(self, path: Path, title: str, options: dict[str, str]) -> int:
+            self.paths.append(path)
+            self.ready_to_spool.wait(timeout=5)
+            self.page_widths[title] = float(PdfReader(path).pages[0].mediabox.width)
+            return 123
+
+    cups = ConcurrentCupsClient()
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(submit_print_job, cups, storage, record, PrintOptions(pages="1"))
+        second = pool.submit(submit_print_job, cups, storage, record, PrintOptions(pages="2"))
+        first.result(timeout=10)
+        second.result(timeout=10)
+
+    assert len(set(cups.paths)) == 2
+    assert cups.page_widths == {"print.pdf pages 1": 72.0, "print.pdf pages 2": 144.0}
+    assert list(storage.filtered_dir.iterdir()) == []
+
+
+def test_filtered_pdf_is_removed_when_cups_rejects_job(storage: TempFileStorage) -> None:
+    record = StoredFile("test-file-id-12345", "print.pdf", "application/pdf", 0, 1, True)
+    storage.files_dir.mkdir(parents=True)
+    writer = PdfWriter()
+    writer.add_blank_page(width=72, height=72)
+    with storage.file_path(record.file_id).open("wb") as output:
+        writer.write(output)
+
+    class RejectingCupsClient(FakeCupsClient):
+        def print_file(self, path: Path, title: str, options: dict[str, str]) -> int:
+            assert path.exists()
+            raise CupsClientError("CUPS rejected job")
+
+    with pytest.raises(PrintRequestError, match="CUPS rejected job"):
+        submit_print_job(RejectingCupsClient(), storage, record, PrintOptions(pages="1"))
+
+    assert list(storage.filtered_dir.iterdir()) == []
 
 
 def test_print_missing_file_id(client: TestClient) -> None:
@@ -269,6 +364,20 @@ def test_print_reports_cups_unavailable(storage: TempFileStorage) -> None:
     assert response.json()["detail"] == "CUPS unavailable"
 
 
+def test_print_reports_capability_detection_failure(client: TestClient) -> None:
+    file_id = upload_pdf(client)
+
+    class CapabilityFailureClient(FakeCupsClient):
+        def get_option_capabilities(self) -> dict[str, set[str]]:
+            raise CupsClientError("CUPS capability detection failed")
+
+    app.dependency_overrides[get_cups_client] = lambda: CapabilityFailureClient()
+    response = client.post("/print", json={"file_id": file_id, "options": {}})
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "CUPS capability detection failed"
+
+
 def test_print_reports_queue_missing(storage: TempFileStorage) -> None:
     app.dependency_overrides.clear()
     app.dependency_overrides[get_file_storage] = lambda: storage
@@ -294,6 +403,54 @@ def test_print_reports_queue_stopped(storage: TempFileStorage) -> None:
 
     app.dependency_overrides.clear()
     assert response.status_code == 409
+
+
+@pytest.mark.parametrize(
+    ("condition", "expected_http_status"),
+    [
+        ("offline_reason", 503),
+        ("failed_probe", 503),
+        ("unknown_state", 503),
+        ("unknown_acceptance", 503),
+        ("rejecting_jobs", 409),
+        ("stopped", 409),
+    ],
+)
+def test_print_rejection_matches_status_readiness(
+    storage: TempFileStorage, condition: str, expected_http_status: int
+) -> None:
+    queue = ready_queue()
+    if condition == "offline_reason":
+        queue["attributes"]["printer-state-reasons"] = ["offline-report"]
+    elif condition == "failed_probe":
+        queue["network"] = {"checked": True, "reachable": False}
+    elif condition == "unknown_state":
+        queue["attributes"].pop("printer-state")
+    elif condition == "unknown_acceptance":
+        queue["attributes"].pop("printer-is-accepting-jobs")
+    elif condition == "rejecting_jobs":
+        queue["attributes"]["printer-is-accepting-jobs"] = False
+    else:
+        queue["attributes"]["printer-state"] = 5
+
+    fake_cups = FakeCupsClient(queue)
+    app.dependency_overrides.clear()
+    app.dependency_overrides[get_file_storage] = lambda: storage
+    app.dependency_overrides[get_cups_client] = lambda: fake_cups
+    with TestClient(app) as client:
+        signup_user(client)
+        file_id = upload_pdf(client)
+        status = client.get("/status")
+        response = client.post("/print", json={"file_id": file_id, "options": {}})
+    app.dependency_overrides.clear()
+
+    assert status.status_code == 200
+    assert status.json()["ready_for_print"] is False
+    if condition in {"offline_reason", "failed_probe"}:
+        assert status.json()["enabled"] is True
+        assert status.json()["accepting_jobs"] is True
+    assert response.status_code == expected_http_status
+    assert fake_cups.submissions == []
 
 
 def test_jobs_defaults_to_active_scope(client: TestClient) -> None:
@@ -454,3 +611,14 @@ def test_options_endpoint_returns_detected_capabilities(client: TestClient) -> N
     assert response.json()["queue"] == "Canon_MG5350"
     assert response.json()["paper_sizes"]["choices"] == ["A4"]
     assert response.json()["duplex_modes"]["mapping"]["none"] == "None"
+
+
+def test_options_endpoint_reports_capability_failure(client: TestClient) -> None:
+    class FailingCupsClient(FakeCupsClient):
+        def get_option_capabilities(self) -> dict[str, set[str]]:
+            raise CupsClientError("CUPS capability detection failed")
+
+    app.dependency_overrides[get_cups_client] = lambda: FailingCupsClient()
+    response = client.get("/options")
+
+    assert response.status_code == 503

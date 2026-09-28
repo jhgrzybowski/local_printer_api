@@ -24,6 +24,7 @@ def test_translate_existing_idle_queue() -> None:
         "state_code": 3,
         "accepting_jobs": True,
         "enabled": True,
+        "ready_for_print": True,
         "message": "ready",
         "device_uri": "ipp://192.168.100.100/ipp/print",
         "location": "Office",
@@ -42,6 +43,7 @@ def test_translate_missing_queue() -> None:
     assert status["state_code"] is None
     assert status["accepting_jobs"] is None
     assert status["enabled"] is False
+    assert status["ready_for_print"] is False
 
 
 def test_translate_stopped_queue_with_string_values() -> None:
@@ -61,6 +63,7 @@ def test_translate_stopped_queue_with_string_values() -> None:
     assert status["state_code"] == 5
     assert status["accepting_jobs"] is False
     assert status["enabled"] is False
+    assert status["ready_for_print"] is False
     assert status["reasons"] == ["paused"]
 
 
@@ -81,6 +84,7 @@ def test_translate_offline_reason_reports_offline_state() -> None:
     assert status["state_code"] == 3
     assert status["accepting_jobs"] is True
     assert status["enabled"] is True
+    assert status["ready_for_print"] is False
     assert status["reasons"] == ["offline-report"]
 
 
@@ -107,6 +111,8 @@ def test_translate_unreachable_network_probe_reports_offline_state() -> None:
     assert status["state"] == "offline"
     assert status["state_code"] == 3
     assert status["enabled"] is True
+    assert status["accepting_jobs"] is True
+    assert status["ready_for_print"] is False
     assert status["reasons"] == ["none", "network-unreachable"]
     assert status["network"] == {
         "checked": True,
@@ -123,4 +129,36 @@ def test_translate_error_status() -> None:
     assert status["queue_name"] == "Canon_MG5350"
     assert status["exists"] is False
     assert status["state"] == "unknown"
+    assert status["ready_for_print"] is False
     assert status["message"] == "CUPS query failed"
+
+
+def test_translate_queue_with_unknown_cups_state_is_not_ready() -> None:
+    status = translate_queue_status(
+        {
+            "name": "Canon_MG5350",
+            "exists": True,
+            "attributes": {"printer-is-accepting-jobs": True},
+        }
+    )
+
+    assert status["state"] == "unknown"
+    assert status["enabled"] is None
+    assert status["ready_for_print"] is False
+
+
+def test_translate_queue_not_accepting_jobs_is_not_ready() -> None:
+    status = translate_queue_status(
+        {
+            "name": "Canon_MG5350",
+            "exists": True,
+            "attributes": {
+                "printer-state": 3,
+                "printer-is-accepting-jobs": False,
+            },
+        }
+    )
+
+    assert status["state"] == "idle"
+    assert status["enabled"] is True
+    assert status["ready_for_print"] is False

@@ -135,7 +135,19 @@ def test_duplex_mapping_all_modes() -> None:
 def test_quality_maps_to_detected_resolution() -> None:
     assert PrintOptions(quality="draft").to_cups_options(GUTENPRINT_CAPABILITIES).applied_options["Resolution"] == "300dpi"
     assert PrintOptions(quality="normal").to_cups_options(GUTENPRINT_CAPABILITIES).applied_options["Resolution"] == "600dpi"
-    assert "quality" in PrintOptions(quality="high").to_cups_options(GUTENPRINT_CAPABILITIES).unsupported_options
+    assert PrintOptions(quality="high").to_cups_options(GUTENPRINT_CAPABILITIES).applied_options["Resolution"] == "612x600dpi"
+
+
+def test_normal_resolution_is_not_reused_for_high_quality() -> None:
+    for resolutions in ({"601x600dpi"}, {"600dpi", "601x600dpi"}):
+        capabilities = {"Resolution": resolutions}
+        normal = PrintOptions(quality="normal").to_cups_options(capabilities)
+        high = PrintOptions(quality="high").to_cups_options(capabilities)
+        summary = build_options_summary("Canon_MG5350", capabilities)["quality"]
+
+        assert "Resolution" in normal.applied_options
+        assert "quality" in high.unsupported_options
+        assert summary["recommended_mapping"]["high"] is None
 
 
 def test_media_type_aliases_and_drop_behavior() -> None:
@@ -171,3 +183,52 @@ def test_options_summary_frontend_shape() -> None:
     assert summary["media_types"]["mapping"]["plain"] == "Plain"
     assert summary["fit_to_page"]["raw_option"] == "StpiShrinkOutput"
     assert summary["collate"]["supported"] is False
+    assert summary["quality"]["recommended_mapping"]["high"] == "612x600dpi"
+    assert summary["color_modes"]["choices"] == ["monochrome", "color", "auto"]
+
+
+def test_summary_uses_the_option_selected_for_submission() -> None:
+    capabilities = {
+        "sides": {"one-sided", "two-sided-long-edge"},
+        "Duplex": {"None", "DuplexNoTumble", "DuplexTumble"},
+        "print-color-mode": {"monochrome", "color", "auto"},
+        "ColorModel": {"Gray", "RGB"},
+        "print-quality": {"3", "4", "5"},
+        "Resolution": {"300dpi", "600dpi", "612x600dpi"},
+        "Collate": {"True", "False"},
+    }
+    summary = build_options_summary("Canon_MG5350", capabilities)
+    assert summary["duplex_modes"]["option_mapping"]["long-edge"] == "sides"
+    assert summary["duplex_modes"]["mapping"]["long-edge"] == "two-sided-long-edge"
+    assert summary["duplex_modes"]["option_mapping"]["short-edge"] == "Duplex"
+    assert summary["color_modes"]["raw_option"] == "print-color-mode"
+    assert summary["quality"]["raw_option"] == "print-quality"
+    assert summary["collate"]["supported"] is True
+    assert PrintOptions(copies=2, collate=True).to_cups_options(capabilities).applied_options["Collate"] == "True"
+    assert PrintOptions(copies=2, collate=False).to_cups_options(capabilities).applied_options["Collate"] == "False"
+
+
+def test_quality_summary_lists_api_choices_when_raw_options_are_mixed() -> None:
+    capabilities = {
+        "print-quality": {"3"},
+        "Resolution": {"600dpi", "612x600dpi"},
+    }
+    quality = build_options_summary("Canon_MG5350", capabilities)["quality"]
+
+    assert quality["supported"] is True
+    assert quality["raw_option"] is None
+    assert quality["choices"] == ["draft", "normal", "high"]
+    assert quality["recommended_mapping"] == {
+        "draft": "3",
+        "normal": "600dpi",
+        "high": "612x600dpi",
+    }
+    assert quality["option_mapping"] == {
+        "draft": "print-quality",
+        "normal": "Resolution",
+        "high": "Resolution",
+    }
+
+
+def test_empty_capabilities_do_not_advertise_orientation() -> None:
+    assert build_options_summary("Canon_MG5350", {})["orientation"]["supported"] is False

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -301,9 +302,12 @@ class _OptionMapper:
     ) -> None:
         bool_value = "true" if value else "false"
         for option_name in option_names:
-            if self._supports(option_name, bool_value):
-                applied[option_name] = bool_value
-                return
+            choices = self.capabilities.get(option_name, set())
+            for candidate in (("true", "on", "yes", "1") if value else ("false", "off", "no", "0")):
+                selected = next((choice for choice in choices if choice.lower() == candidate), None)
+                if selected is not None:
+                    applied[option_name] = selected
+                    return
 
         if not self.capabilities:
             applied[option_names[0]] = bool_value
@@ -339,6 +343,21 @@ class _OptionMapper:
         for candidate in preferred[value]:
             if candidate in choices:
                 return candidate
+        if value == "high" and option_name == "Resolution":
+            resolutions: list[tuple[tuple[int, int], str]] = []
+            for choice in choices:
+                if choice in preferred["normal"]:
+                    continue
+                match = re.fullmatch(r"(\d+)(?:x(\d+))?dpi", choice, re.IGNORECASE)
+                if match:
+                    x_dpi = int(match.group(1))
+                    y_dpi = int(match.group(2) or match.group(1))
+                    resolutions.append(((x_dpi, y_dpi), choice))
+            if resolutions:
+                highest = max(resolutions)
+                # Do not label an ordinary 600 dpi queue as offering high quality.
+                if highest[0] > (600, 600):
+                    return highest[1]
         return None
 
     def _supports(self, option_name: str, value: str) -> bool:

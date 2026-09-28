@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
 import tempfile
+import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -24,6 +26,7 @@ class User:
     display_name: str | None
     created_at: str
     updated_at: str
+    identity_id: str
 
 
 @dataclass(frozen=True)
@@ -39,6 +42,7 @@ class Database:
     def __init__(self, path: str | Path = DB_PATH) -> None:
         self.path = Path(path)
         self.migrate()
+        self._database_id = self.database_id()
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -67,7 +71,8 @@ class Database:
                     password_salt TEXT NOT NULL,
                     password_iterations INTEGER NOT NULL,
                     created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    identity_id TEXT NOT NULL UNIQUE
                 );
 
                 CREATE TABLE IF NOT EXISTS sessions (
@@ -89,6 +94,11 @@ class Database:
                     preferences_json TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS app_metadata (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
                 );
 
                 CREATE TABLE IF NOT EXISTS print_history (
@@ -114,6 +124,21 @@ class Database:
                     ON print_history(created_at);
                 """
             )
+            # Serialize the read/check/ALTER sequence across worker processes.
+            # CREATE IF NOT EXISTS above is safe in autocommit mode, while the
+            # identity-column check must see the preceding writer's changes.
+            connection.execute("BEGIN IMMEDIATE")
+            user_columns = {row["name"] for row in connection.execute("PRAGMA table_info(users)")}
+            if "identity_id" not in user_columns:
+                connection.execute("ALTER TABLE users ADD COLUMN identity_id TEXT")
+            for row in connection.execute("SELECT id FROM users WHERE identity_id IS NULL"):
+                connection.execute(
+                    "UPDATE users SET identity_id = ? WHERE id = ?",
+                    (str(uuid.uuid4()), int(row["id"])),
+                )
+            connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_identity_id ON users(identity_id)"
+            )
             columns = {row["name"] for row in connection.execute("PRAGMA table_info(print_history)")}
             for name, definition in (
                 ("cups_printer_uri", "TEXT"),
@@ -122,6 +147,20 @@ class Database:
             ):
                 if name not in columns:
                     connection.execute(f"ALTER TABLE print_history ADD COLUMN {name} {definition}")
+            connection.execute(
+                "INSERT OR IGNORE INTO app_metadata (key, value) VALUES ('database_id', ?)",
+                (str(uuid.uuid4()),),
+            )
+
+    def database_id(self) -> str:
+        """Read the identity from the live database, not a cached path or inode."""
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT value FROM app_metadata WHERE key = 'database_id'"
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("Database identity is missing")
+        return str(uuid.UUID(str(row["value"])))
 
     def create_user(
         self,
@@ -137,9 +176,9 @@ class Database:
                 """
                 INSERT INTO users (
                     username, display_name, password_hash, password_salt,
-                    password_iterations, created_at, updated_at
+                    password_iterations, created_at, updated_at, identity_id
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     username,
@@ -149,6 +188,7 @@ class Database:
                     password_iterations,
                     now,
                     now,
+                    str(uuid.uuid4()),
                 ),
             )
             user_id = int(cursor.lastrowid)
@@ -162,7 +202,7 @@ class Database:
             return connection.execute(
                 """
                 SELECT id, username, display_name, password_hash, password_salt,
-                       password_iterations, created_at, updated_at
+                       password_iterations, created_at, updated_at, identity_id
                 FROM users
                 WHERE username = ?
                 """,
@@ -173,7 +213,7 @@ class Database:
         with self.connect() as connection:
             row = connection.execute(
                 """
-                SELECT id, username, display_name, created_at, updated_at
+                SELECT id, username, display_name, created_at, updated_at, identity_id
                 FROM users
                 WHERE id = ?
                 """,
@@ -208,7 +248,7 @@ class Database:
             row = connection.execute(
                 """
                 SELECT users.id, users.username, users.display_name,
-                       users.created_at, users.updated_at
+                       users.created_at, users.updated_at, users.identity_id
                 FROM sessions
                 JOIN users ON users.id = sessions.user_id
                 WHERE sessions.token_hash = ?
@@ -344,13 +384,15 @@ class Database:
                 file_ids.update(str(row[0]) for row in rows)
         # History writes can fail after CUPS accepts a job. The durable fallback
         # claim also records its source so cleanup still protects that upload.
-        for path in (self.path.parent / "job-claims").glob("*.json"):
+        for path in (self.path.parent / "job-claims" / self._database_id).glob("*.json"):
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
                 if not isinstance(data, dict):
                     continue
                 file_id = data.get("file_id")
-                if int(data["job_id"]) in job_ids and isinstance(file_id, str):
+                user = self.get_user_by_id(int(data["user_id"]))
+                if (user is not None and data.get("user_identity_id") == user.identity_id
+                        and int(data["job_id"]) in job_ids and isinstance(file_id, str)):
                     file_ids.add(file_id)
             except (OSError, ValueError, TypeError, KeyError):
                 continue
@@ -377,7 +419,7 @@ class Database:
     def prune_fallback_job_claims(self, cutoff_timestamp: float, active_job_ids: set[int]) -> int:
         """Expire fallback ownership records while CUPS still tracks active jobs."""
         removed = 0
-        directory = self.path.parent / "job-claims"
+        directory = self.path.parent / "job-claims" / self._database_id
         for path in directory.glob("*.json"):
             try:
                 if path.stat().st_mtime >= cutoff_timestamp:
@@ -426,6 +468,41 @@ class Database:
                 ),
             )
 
+    def forgotten_job_marker_path(self, claim: JobClaim) -> Path:
+        identity = json.dumps(claim.__dict__, sort_keys=True).encode("utf-8")
+        digest = hashlib.sha256(identity).hexdigest()
+        return self.path.parent / "history-purges" / self._database_id / f"{claim.user_id}-{digest}.json"
+
+    def save_forgotten_job_marker(self, claim: JobClaim) -> None:
+        """Keep successful purge intent when SQLite cannot record it yet."""
+        target = self.forgotten_job_marker_path(claim)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(dir=target.parent, prefix=".purge-")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                json.dump(claim.__dict__, stream, sort_keys=True)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, target)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+
+    def remove_forgotten_job_marker(self, claim: JobClaim) -> None:
+        self.forgotten_job_marker_path(claim).unlink(missing_ok=True)
+
+    def recover_forgotten_job_markers(self, user_id: int) -> None:
+        directory = self.path.parent / "history-purges" / self.database_id()
+        for path in directory.glob(f"{user_id}-*.json"):
+            try:
+                claim = JobClaim(**json.loads(path.read_text(encoding="utf-8")))
+            except (OSError, ValueError, TypeError):
+                continue
+            if claim.user_id != user_id or path != self.forgotten_job_marker_path(claim):
+                continue
+            self.update_print_history_status_for_claim(claim, "forgotten")
+            path.unlink(missing_ok=True)
+
     def list_job_claims(self, user_id: int) -> list[JobClaim]:
         with self.connect() as connection:
             rows = connection.execute(
@@ -445,12 +522,19 @@ class Database:
         ]
         return claims + self.list_fallback_job_claims(user_id)
 
-    def save_fallback_job_claim(self, claim: JobClaim, file_id: str | None = None) -> None:
+    def save_fallback_job_claim(
+        self, claim: JobClaim, user_identity_id: str, file_id: str | None = None,
+    ) -> None:
         """Save a small ownership record when the larger history write fails."""
-        directory = self.path.parent / "job-claims"
+        # The ID was loaded at initialization, so this write still works when a
+        # transient SQLite lock caused the history insert to fail.
+        directory = self.path.parent / "job-claims" / self._database_id
         directory.mkdir(parents=True, exist_ok=True)
         target = directory / f"{claim.user_id}-{claim.job_id}.json"
-        payload = json.dumps({**claim.__dict__, "file_id": file_id}, sort_keys=True)
+        payload = json.dumps(
+            {**claim.__dict__, "user_identity_id": user_identity_id, "file_id": file_id},
+            sort_keys=True,
+        )
         fd, temporary = tempfile.mkstemp(dir=directory, prefix=".claim-")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as stream:
@@ -463,16 +547,20 @@ class Database:
                 os.unlink(temporary)
 
     def list_fallback_job_claims(self, user_id: int) -> list[JobClaim]:
-        directory = self.path.parent / "job-claims"
+        directory = self.path.parent / "job-claims" / self.database_id()
         claims = []
+        user = self.get_user_by_id(user_id)
+        if user is None:
+            return claims
         for path in directory.glob(f"{user_id}-*.json"):
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
+                identity_id = data.get("user_identity_id")
                 claim = JobClaim(
                     data["user_id"], data["job_id"], data["printer_uri"],
                     data["created_at"], data["job_uuid"],
                 )
-                if claim.user_id == user_id:
+                if claim.user_id == user_id and identity_id == user.identity_id:
                     claims.append(claim)
             except (OSError, ValueError, TypeError, KeyError):
                 continue
@@ -486,6 +574,7 @@ def user_from_row(row: sqlite3.Row) -> User:
         display_name=row["display_name"],
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
+        identity_id=str(row["identity_id"]),
     )
 
 

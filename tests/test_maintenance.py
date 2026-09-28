@@ -135,15 +135,32 @@ def test_cleanup_rechecks_job_mapping_after_initial_snapshot(
     assert storage.metadata_path(file_id).exists()
 
 
+def test_cleanup_keeps_filtered_pdf_while_source_is_leased(tmp_path: Path) -> None:
+    storage = TempFileStorage(tmp_path / "storage")
+    file_id = "leased-filtered-file"
+    old_upload(storage, file_id)
+    filtered = next(storage.filtered_dir.glob(f"{file_id}-*.pdf"))
+    old = time.time() - 100 * 86400
+    os.utime(filtered, (old, old))
+
+    with storage.lease(file_id):
+        storage.prune_expired(time.time() - 7 * 86400, set())
+        assert filtered.exists()
+        filtered.write_bytes(b"%PDF fresh")
+
+    assert filtered.read_bytes() == b"%PDF fresh"
+
+
 def test_fallback_claim_protects_source_upload(
     tmp_path: Path, isolated_database: Database,
 ) -> None:
     storage = TempFileStorage(tmp_path / "storage")
     file_id = "fallback-file-123456"
     old_upload(storage, file_id)
-    claim = JobClaim(1, 123, "ipp://localhost/printers/Canon_MG5350", 1123, "urn:uuid:job-123")
-    isolated_database.save_fallback_job_claim(claim, file_id=file_id)
-    assert isolated_database.list_fallback_job_claims(1) == [claim]
+    user = isolated_database.create_user("owner", None, "hash", "salt", 1)
+    claim = JobClaim(user.id, 123, "ipp://localhost/printers/Canon_MG5350", 1123, "urn:uuid:job-123")
+    isolated_database.save_fallback_job_claim(claim, user.identity_id, file_id=file_id)
+    assert isolated_database.list_fallback_job_claims(user.id) == [claim]
     maybe_run_maintenance(isolated_database, storage, FakeCupsClient(), force=True)
     assert storage.file_path(file_id).exists()
 
@@ -152,19 +169,20 @@ def test_old_fallback_claims_expire_except_active_jobs(
     tmp_path: Path, isolated_database: Database,
 ) -> None:
     storage = TempFileStorage(tmp_path / "storage")
+    user = isolated_database.create_user("owner", None, "hash", "salt", 1)
     uri = "ipp://localhost/printers/Canon_MG5350"
-    expired = JobClaim(1, 999, uri, 1000, "urn:uuid:expired")
-    active = JobClaim(1, 123, uri, 1001, "urn:uuid:active")
-    isolated_database.save_fallback_job_claim(expired)
-    isolated_database.save_fallback_job_claim(active)
-    directory = isolated_database.path.parent / "job-claims"
+    expired = JobClaim(user.id, 999, uri, 1000, "urn:uuid:expired")
+    active = JobClaim(user.id, 123, uri, 1001, "urn:uuid:active")
+    isolated_database.save_fallback_job_claim(expired, user.identity_id)
+    isolated_database.save_fallback_job_claim(active, user.identity_id)
+    directory = isolated_database.path.parent / "job-claims" / isolated_database.database_id()
     old = time.time() - 100 * 86400
     for path in directory.glob("*.json"):
         os.utime(path, (old, old))
 
     maybe_run_maintenance(isolated_database, storage, FakeCupsClient(), force=True)
 
-    assert isolated_database.list_fallback_job_claims(1) == [active]
+    assert isolated_database.list_fallback_job_claims(user.id) == [active]
 
 
 def test_history_is_paginated_per_user(isolated_database: Database) -> None:
