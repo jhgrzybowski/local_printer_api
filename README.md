@@ -113,7 +113,25 @@ If you are not using the Canon MG5350 environment documented in this repository,
 
 ## Run the API
 
-From the repository root:
+For a direct host run, create the durable SQLite directory once for the account
+that will run the API:
+
+```bash
+sudo install -d -m 700 -o "$(id -un)" -g "$(id -gn)" /var/lib/local-printer-api
+```
+
+If upgrading a host run that used the old default database path, stop the API
+and move its database before restarting:
+
+```bash
+sudo mv -i /var/tmp/printer-backend/app.db /var/lib/local-printer-api/app.db
+sudo chown "$(id -un):$(id -gn)" /var/lib/local-printer-api/app.db
+```
+
+Run the move only when that old database exists. If the destination already
+exists, decide which database to keep before accepting the overwrite prompt.
+Alternatively, set `DB_PATH` to another durable path writable by the API
+account. From the repository root:
 
 ```bash
 source .venv/bin/activate
@@ -183,6 +201,11 @@ curl -s "$PRINTER_BACKEND/health" | jq
 curl -s "$PRINTER_BACKEND/status" | jq
 ```
 
+Use `ready_for_print` to decide whether to offer print submission. The
+`enabled` and `accepting_jobs` fields report CUPS queue facts and can remain
+true while the printer is offline. Readiness is checked again when submitting,
+so the printer can still become unavailable between the status and print calls.
+
 ### Printer options
 
 ```bash
@@ -218,6 +241,10 @@ export FILE_ID="replace-with-uploaded-file-id"
 
 ### Generate/read preview
 
+For PDFs, this endpoint lists all page URLs without rendering them. Each page is
+rendered and cached when its PNG URL is requested. A page's `size_bytes` appears
+in the metadata after that page has been rendered.
+
 ```bash
 curl -b cookies.txt -s "$PRINTER_BACKEND/files/$FILE_ID/preview" | jq
 ```
@@ -226,6 +253,40 @@ Download page 1 preview:
 
 ```bash
 curl -b cookies.txt -o preview-page-1.png "$PRINTER_BACKEND/files/$FILE_ID/preview/1"
+```
+
+### Recover uploads from before accounts existed
+
+Old upload metadata may have no `owner_user_id`. These files stay inaccessible
+through the API until a local operator identifies the rightful account. The
+API returns 404 for an unowned file, just as it does for a missing file or one
+owned by another account. Never assign a legacy upload based only on whoever
+first requests its ID.
+
+On a host installation, run these commands as the account that runs the API,
+with the same `TMP_DIR` and `DB_PATH` values as the service:
+
+```bash
+python3 scripts/claim_legacy_upload.py list
+python3 scripts/claim_legacy_upload.py claim EXACT_FILE_ID alice
+python3 scripts/claim_legacy_upload.py claim EXACT_FILE_ID alice --apply
+```
+
+The first command lists readable, unowned uploads. The second shows the chosen
+file and existing account without changing anything. Check the filename and
+file ID against your own records before using `--apply`. The command refuses to
+transfer an already owned upload or create a missing account/database. It
+changes only that file's metadata, preserving its permissions; the file bytes
+stay in place. To use custom paths, add `--tmp-dir PATH --db-path PATH` before
+`list` or `claim`.
+
+For the documented Docker Compose deployment, the script is included in the
+API image and uses the mounted upload and database volumes:
+
+```bash
+docker compose exec api python scripts/claim_legacy_upload.py list
+docker compose exec api python scripts/claim_legacy_upload.py claim EXACT_FILE_ID alice
+docker compose exec api python scripts/claim_legacy_upload.py claim EXACT_FILE_ID alice --apply
 ```
 
 ### Print one page safely

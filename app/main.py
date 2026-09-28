@@ -362,7 +362,7 @@ def list_previews(
             {
                 "page": index,
                 "url": f"/files/{record.file_id}/preview/{index}",
-                "size_bytes": path.stat().st_size,
+                **({"size_bytes": path.stat().st_size} if path.exists() else {}),
             }
             for index, path in enumerate(paths, start=1)
         ],
@@ -442,6 +442,8 @@ def get_user_file_record(
     current_user: User,
 ) -> StoredFile:
     record = storage.get_record(file_id)
+    # Legacy unowned uploads must be assigned by a local operator. Return the
+    # same 404 as an absent or other user's file to avoid disclosing file IDs.
     if record is None or record.owner_user_id != current_user.id:
         raise HTTPException(status_code=404, detail="File not found")
     return record

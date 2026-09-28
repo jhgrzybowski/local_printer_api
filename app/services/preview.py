@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import tempfile
 from pathlib import Path
 
 from app.services.file_storage import StoredFile, TempFileStorage
@@ -24,17 +26,22 @@ class PreviewService:
 
         preview_dir = self.storage.preview_dir(record.file_id)
         expected_count = record.page_count or 1
-        existing = [preview_dir / f"page-{page}.png" for page in range(1, expected_count + 1)]
-        if existing and all(path.exists() for path in existing):
-            return existing
+        paths = [preview_dir / f"page-{page}.png" for page in range(1, expected_count + 1)]
+        if record.detected_mime == "application/pdf":
+            # Metadata requests only need page URLs. Render a PDF page when its
+            # PNG is requested so a large document does not occupy a worker.
+            if not self.storage.file_path(record.file_id).exists():
+                raise PreviewError("Stored file is missing", 404)
+            return paths
+
+        if paths[0].exists():
+            return paths
 
         preview_dir.mkdir(parents=True, exist_ok=True)
         source = self.storage.file_path(record.file_id)
         if not source.exists():
             raise PreviewError("Stored file is missing", 404)
 
-        if record.detected_mime == "application/pdf":
-            return self._render_pdf(source, preview_dir)
         if record.detected_mime in {"image/png", "image/jpeg"}:
             return [self._render_image(source, preview_dir)]
 
@@ -48,11 +55,14 @@ class PreviewService:
 
         self.ensure_previews(record)
         path = self.storage.preview_dir(record.file_id) / f"page-{page}.png"
+        if record.detected_mime == "application/pdf" and not path.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self._render_pdf(self.storage.file_path(record.file_id), path, page)
         if not path.exists():
             raise PreviewError("Preview page not found", 404)
         return path
 
-    def _render_pdf(self, source: Path, preview_dir: Path) -> list[Path]:
+    def _render_pdf(self, source: Path, destination: Path, page: int) -> None:
         try:
             from pdf2image import convert_from_path
             from pdf2image.exceptions import PDFInfoNotInstalledError, PDFPageCountError
@@ -60,20 +70,21 @@ class PreviewService:
             raise PreviewError("pdf2image is not installed") from exc
 
         try:
-            images = convert_from_path(str(source), dpi=self.dpi, fmt="png")
+            images = convert_from_path(
+                str(source), dpi=self.dpi, fmt="png", first_page=page, last_page=page
+            )
+            if len(images) != 1:
+                raise PreviewError("Unable to render PDF preview page", 400)
+            with images[0] as image:
+                _save_png_atomic(image, destination)
         except PDFInfoNotInstalledError as exc:
             raise PreviewError("Poppler is not installed or not available on PATH") from exc
         except PDFPageCountError as exc:
             raise PreviewError("Unable to inspect PDF for preview generation", 400) from exc
+        except PreviewError:
+            raise
         except Exception as exc:
             raise PreviewError(f"Unable to generate PDF preview: {exc}") from exc
-
-        paths: list[Path] = []
-        for index, image in enumerate(images, start=1):
-            path = preview_dir / f"page-{index}.png"
-            image.save(path, "PNG")
-            paths.append(path)
-        return paths
 
     def _render_image(self, source: Path, preview_dir: Path) -> Path:
         try:
@@ -85,7 +96,18 @@ class PreviewService:
             with Image.open(source) as image:
                 image.thumbnail((1600, 1600))
                 output = preview_dir / "page-1.png"
-                image.convert("RGB").save(output, "PNG")
+                _save_png_atomic(image.convert("RGB"), output)
                 return output
         except Exception as exc:
             raise PreviewError(f"Unable to generate image preview: {exc}", 400) from exc
+
+
+def _save_png_atomic(image: object, destination: Path) -> None:
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{destination.stem}-", suffix=".png", dir=destination.parent)
+    os.close(fd)
+    temporary = Path(temporary_name)
+    try:
+        image.save(temporary, "PNG")  # type: ignore[attr-defined]
+        temporary.replace(destination)
+    finally:
+        temporary.unlink(missing_ok=True)

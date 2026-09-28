@@ -74,7 +74,12 @@ The API reads its printer, temporary storage, database, upload, preview, and
 CORS settings from [app/settings.py](app/settings.py). Compose supplies
 deployment-specific values in [docker-compose.yml](docker-compose.yml),
 including a persistent database volume at
-`/var/lib/local-printer-api/app.db`. Follow
+`/var/lib/local-printer-api/app.db`. The API's `DB_PATH` default now uses
+that same durable location. For a host install, create the directory and
+give the API account write access before starting the service. If an
+existing database is under the old `/var/tmp/printer-backend/app.db` path,
+move it while the API is stopped or set `DB_PATH` to another durable path.
+Ubuntu may remove idle files under `/var/tmp`. Follow
 [DEPLOYMENT_DOCKER.md](DEPLOYMENT_DOCKER.md#run-with-docker-compose) for the
 current container configuration and verification steps.
 
@@ -89,24 +94,20 @@ current container configuration and verification steps.
 
 **Customization for different deployments:**
 
-Override `CORS_ALLOWED_ORIGINS` via environment variable (comma-separated list):
+Override `CORS_ALLOWED_ORIGINS` via environment variable (comma-separated list).
+An override replaces the complete default list, so include every browser origin
+your deployment needs:
 
 ```bash
 # Docker Compose
-export CORS_ALLOWED_ORIGINS="http://my-api:8000,http://my-frontend:5173"
+export CORS_ALLOWED_ORIGINS="http://192.168.1.10:8000,http://192.168.1.10:5173"
 
 # Plain environment
-export CORS_ALLOWED_ORIGINS="http://different-ip:8000"
+export CORS_ALLOWED_ORIGINS="http://192.168.1.10:5173"
 ```
 
-**Default policy includes:**
-
-- Backend API: `192.168.100.99:8000`, `ubuntu26-remote.local:8000`, `drukarka.local:8000`
-- Vite dev ports (5173-5175) on all configured hosts
-- Production ports (80, 443) on `drukarka.local` (with and without explicit port)
-- Localhost for local development
-
-See `app/settings.py` for the complete allowlist.
+The authoritative default is `DEFAULT_CORS_ALLOWED_ORIGINS` in
+`app/settings.py`; leave the variable unset or empty to use that list.
 
 `CORS_ALLOWED_ORIGINS` is a comma-separated list of browser frontend origins.
 The Print Bar frontend should use
@@ -119,8 +120,8 @@ considers two URLs cross-site when their registered host differs — so
 `http://localhost:5173` (frontend) and `http://192.168.100.99:8000` (backend)
 are cross-site even though both are on the LAN.  The browser will **not** send
 the session cookie on cross-site XHR/fetch requests, which means every
-auth-protected endpoint returns `401` even though a CORS preflight would
-succeed.
+auth-protected endpoint returns `401` if a CORS override allows that origin.
+Adding localhost to the allowlist alone does not make the cookie cross-site.
 
 `localhost` and `127.0.0.1` origins are therefore **excluded from the default
 CORS allowlist** to prevent this confusing partial-works situation.
