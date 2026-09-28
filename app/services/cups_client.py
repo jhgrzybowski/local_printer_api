@@ -128,9 +128,6 @@ class CupsClient:
             raise CupsClientError(f"CUPS job query failed: {exc}") from exc
         return [normalize_job(job_id, attrs) for job_id, attrs in jobs.items()]
 
-    def job_counts(self) -> dict[str, int]:
-        return {scope: len(self.list_jobs(scope)) for scope in JOB_SCOPE_TO_CUPS}
-
     def get_job(self, job_id: int) -> dict[str, Any] | None:
         connection = self._connection()
         return self._get_job_from_connection(connection, job_id)

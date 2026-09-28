@@ -285,11 +285,17 @@ def list_jobs(
         raise HTTPException(status_code=400, detail="Invalid job scope")
     try:
         claims = get_user_job_claims(database, current_user)
+        user_jobs = filter_jobs_by_owner(client.list_jobs("all"), claims, client.queue_name)
+        jobs_by_scope = {
+            "active": [job for job in user_jobs if job["is_active"]],
+            "completed": [job for job in user_jobs if job["is_terminal"]],
+            "all": user_jobs,
+        }
         return {
             "scope": scope,
             "queue": client.queue_name,
-            "jobs": filter_jobs_by_owner(client.list_jobs(scope), claims, client.queue_name),
-            "counts": user_job_counts(client, claims),
+            "jobs": jobs_by_scope[scope],
+            "counts": {name: len(jobs) for name, jobs in jobs_by_scope.items()},
         }
     except CupsClientError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -663,13 +669,6 @@ def filter_jobs_by_owner(
             for claim in by_id.get(job.get("job_id"), [])
         )
     ]
-
-
-def user_job_counts(client: CupsClient, claims: list[JobClaim]) -> dict[str, int]:
-    return {
-        scope: len(filter_jobs_by_owner(client.list_jobs(scope), claims, client.queue_name))
-        for scope in JOB_SCOPE_TO_CUPS
-    }
 
 
 def parse_page_number(page: str) -> int:
