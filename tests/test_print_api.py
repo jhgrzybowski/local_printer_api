@@ -13,7 +13,7 @@ from pypdf import PdfReader, PdfWriter
 from app.main import app, get_cups_client, get_file_storage
 from app.models.print_options import PrintOptions
 from app.services.cups_client import CupsClientError, normalize_job
-from app.services.database import Database
+from app.services.database import Database, JobClaim
 from app.services.file_storage import StoredFile, TempFileStorage
 from app.services.print_service import PrintRequestError, submit_print_job
 from tests.helpers import signup_user
@@ -44,9 +44,16 @@ class FakeCupsClient:
         self.queue = queue or ready_queue()
         self.submissions: list[dict[str, Any]] = []
         self.jobs = {
-            123: normalize_job(123, {"job-name": "active.pdf", "job-state": 5}),
-            456: normalize_job(456, {"job-name": "done.pdf", "job-state": 9}),
-            789: normalize_job(789, {"job-name": "canceled.pdf", "job-state": 7}),
+            job_id: normalize_job(job_id, {
+                "job-name": name, "job-state": state,
+                "job-printer-uri": "ipp://localhost/printers/Canon_MG5350",
+                "time-at-creation": 1000 + job_id,
+                "job-uuid": f"urn:uuid:job-{job_id}",
+            })
+            for job_id, name, state in (
+                (123, "active.pdf", 5), (456, "done.pdf", 9),
+                (789, "canceled.pdf", 7),
+            )
         }
 
     def get_queue(self) -> dict[str, Any]:
@@ -81,7 +88,10 @@ class FakeCupsClient:
     def get_job(self, job_id: int) -> dict[str, Any] | None:
         return self.jobs.get(job_id)
 
-    def cancel_job(self, job_id: int) -> dict[str, Any]:
+    def cancel_job(
+        self, job_id: int, expected_job: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        assert expected_job is not None and expected_job["job_id"] == job_id
         job = self.get_job(job_id)
         if job is None:
             return {
@@ -107,7 +117,10 @@ class FakeCupsClient:
             "message": "Job cancellation was submitted.",
         }
 
-    def forget_job(self, job_id: int) -> dict[str, Any]:
+    def forget_job(
+        self, job_id: int, expected_job: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        assert expected_job is not None and expected_job["job_id"] == job_id
         job = self.get_job(job_id)
         if job is None:
             return {
@@ -201,7 +214,41 @@ def grant_cups_job(database: Database, job_id: int, user_id: int = 1) -> None:
         applied_options={},
         cups_job_id=job_id,
         warnings=[],
+        job_claim=JobClaim(user_id, job_id, "ipp://localhost/printers/Canon_MG5350",
+                           1000 + job_id, f"urn:uuid:job-{job_id}"),
     )
+
+
+def test_job_without_uuid_cannot_be_managed_from_durable_claim(
+    client: TestClient, isolated_database: Database,
+) -> None:
+    cups = FakeCupsClient()
+    cups.jobs[123]["job_uuid"] = None
+    app.dependency_overrides[get_cups_client] = lambda: cups
+    user_id = 1
+    isolated_database.insert_print_history(
+        user_id=user_id, file_id="uuidless-file", original_filename="job.pdf",
+        detected_mime="application/pdf", size_bytes=1, page_count=1,
+        requested_options={}, applied_options={}, cups_job_id=123, warnings=[],
+        job_claim=JobClaim(user_id, 123, "ipp://localhost/printers/Canon_MG5350", 1123, None),
+    )
+
+    assert client.get("/jobs/123").status_code == 404
+    assert client.delete("/jobs/123").status_code == 404
+    assert client.post("/jobs/123/forget").status_code == 404
+    assert all(job["job_id"] != 123 for job in client.get("/jobs").json()["jobs"])
+
+
+def test_print_without_cups_uuid_warns_management_is_unavailable(client: TestClient) -> None:
+    cups = FakeCupsClient()
+    cups.jobs[123]["job_uuid"] = None
+    app.dependency_overrides[get_cups_client] = lambda: cups
+    file_id = upload_pdf(client)
+
+    response = client.post("/print", json={"file_id": file_id, "options": {}})
+
+    assert response.status_code == 200
+    assert any("job management is unavailable" in warning for warning in response.json()["warnings"])
 
 
 def test_print_pdf_with_mocked_cups(client: TestClient) -> None:

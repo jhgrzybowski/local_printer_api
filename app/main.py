@@ -1,8 +1,8 @@
 from contextlib import asynccontextmanager
 import logging
 from pathlib import Path
-from threading import Lock
 from typing import Any
+from urllib.parse import unquote, urlsplit
 
 import yaml
 from fastapi import (
@@ -22,9 +22,14 @@ from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 
 from app.models.print_options import PrintRequest
-from app.services.cups_client import JOB_SCOPE_TO_CUPS, CupsClient, CupsClientError
+from app.services.cups_client import (
+    JOB_SCOPE_TO_CUPS,
+    CupsClient,
+    CupsClientError,
+    CupsJobChangedError,
+)
 from app.services.auth import AuthError, AuthService, LoginSession, public_user
-from app.services.database import Database, User
+from app.services.database import Database, JobClaim, User
 from app.services.file_storage import StoredFile, StorageError, TempFileStorage
 from app.services.options_summary import build_options_summary
 from app.services.preview import PreviewError, PreviewService
@@ -42,8 +47,6 @@ from app.settings import (
 
 OPENAPI_YAML_PATH = Path(__file__).resolve().parent.parent / "openapi.yaml"
 LOGGER = logging.getLogger(__name__)
-UNPERSISTED_JOB_LOCK = Lock()
-UNPERSISTED_JOB_OWNERS: dict[int, set[int]] = {}
 
 
 @asynccontextmanager
@@ -217,6 +220,17 @@ def print_file(
     except PrintRequestError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
     try:
+        submitted_job = client.get_job(int(result["job_id"]))
+        job_claim = claim_for_job(current_user.id, submitted_job, client.queue_name)
+    except CupsClientError:
+        LOGGER.exception("Could not read submitted CUPS job %s", result["job_id"])
+        job_claim = None
+    if job_claim is None:
+        result["warnings"] = [
+            *[str(warning) for warning in result["warnings"]],
+            "CUPS job identity could not be verified; job management is unavailable",
+        ]
+    try:
         history_id = database.insert_print_history(
             user_id=current_user.id,
             file_id=record.file_id,
@@ -228,18 +242,27 @@ def print_file(
             applied_options=result["applied_options"],
             cups_job_id=int(result["job_id"]),
             warnings=[str(warning) for warning in result["warnings"]],
+            job_claim=job_claim,
         )
     except Exception:
         LOGGER.exception(
             "Failed to persist print history after submitting CUPS job %s",
             result["job_id"],
         )
-        remember_unpersisted_job(current_user.id, int(result["job_id"]))
+        fallback_saved = False
+        if job_claim is not None:
+            try:
+                database.save_fallback_job_claim(job_claim, current_user.identity_id)
+                fallback_saved = True
+            except Exception:
+                LOGGER.exception("Could not save fallback ownership for CUPS job %s", result["job_id"])
         history_id = None
         result["warnings"] = [
             *[str(warning) for warning in result["warnings"]],
             "Print history could not be persisted; CUPS job was submitted",
         ]
+        if not fallback_saved:
+            result["warnings"].append("Job ownership could not be saved; job management is unavailable")
     result["history_id"] = history_id
     return result
 
@@ -254,12 +277,12 @@ def list_jobs(
     if scope not in JOB_SCOPE_TO_CUPS:
         raise HTTPException(status_code=400, detail="Invalid job scope")
     try:
-        allowed_job_ids = get_user_cups_job_ids(database, current_user)
+        claims = get_user_job_claims(database, current_user)
         return {
             "scope": scope,
             "queue": client.queue_name,
-            "jobs": filter_jobs_by_owner(client.list_jobs(scope), allowed_job_ids),
-            "counts": user_job_counts(client, allowed_job_ids),
+            "jobs": filter_jobs_by_owner(client.list_jobs(scope), claims, client.queue_name),
+            "counts": user_job_counts(client, claims),
         }
     except CupsClientError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -285,7 +308,6 @@ def get_job(
     client: CupsClient = Depends(get_cups_client),
     database: Database = Depends(get_database),
 ) -> dict[str, object]:
-    require_user_cups_job(database, current_user, job_id)
     try:
         job = client.get_job(job_id)
     except CupsClientError as exc:
@@ -293,6 +315,7 @@ def get_job(
 
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
+    require_user_cups_job(database, current_user, job, client.queue_name)
     return job
 
 
@@ -303,9 +326,12 @@ def cancel_job(
     client: CupsClient = Depends(get_cups_client),
     database: Database = Depends(get_database),
 ) -> dict[str, object]:
-    require_user_cups_job(database, current_user, job_id)
     try:
-        return client.cancel_job(job_id)
+        job = client.get_job(job_id)
+        require_user_cups_job(database, current_user, job, client.queue_name)
+        return client.cancel_job(job_id, expected_job=job)
+    except CupsJobChangedError as exc:
+        raise HTTPException(status_code=404, detail="Job not found") from exc
     except CupsClientError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
@@ -317,9 +343,12 @@ def forget_job(
     client: CupsClient = Depends(get_cups_client),
     database: Database = Depends(get_database),
 ) -> dict[str, object]:
-    require_user_cups_job(database, current_user, job_id)
     try:
-        result = client.forget_job(job_id)
+        job = client.get_job(job_id)
+        require_user_cups_job(database, current_user, job, client.queue_name)
+        result = client.forget_job(job_id, expected_job=job)
+    except CupsJobChangedError as exc:
+        raise HTTPException(status_code=404, detail="Job not found") from exc
     except CupsClientError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
@@ -449,58 +478,94 @@ def get_user_file_record(
     return record
 
 
-def require_user_cups_job(database: Database, current_user: User, job_id: int) -> None:
-    if job_id in get_unpersisted_jobs(current_user.id):
-        return
+def claim_for_job(user_id: int, job: dict[str, Any] | None, queue_name: str) -> JobClaim | None:
+    if job is None:
+        return None
+    printer_uri = job.get("printer_uri")
+    created_at = job.get("created_at")
+    if not isinstance(printer_uri, str) or not printer_uri:
+        return None
     try:
-        owns_job = database.user_has_cups_job(current_user.id, job_id)
+        uri = urlsplit(printer_uri)
+    except ValueError:
+        return None
+    if (
+        uri.scheme not in {"ipp", "ipps"}
+        or not uri.netloc
+        or unquote(uri.path).rstrip("/") != f"/printers/{queue_name}"
+    ):
+        return None
+    try:
+        created = int(created_at)
+    except (TypeError, ValueError):
+        return None
+    if isinstance(created_at, bool) or created <= 0:
+        return None
+    uuid = job.get("job_uuid")
+    if not uuid:
+        return None
+    return JobClaim(user_id, int(job["job_id"]), printer_uri, created,
+                    str(uuid))
+
+
+def claim_matches_job(claim: JobClaim, job: dict[str, Any], queue_name: str) -> bool:
+    # Queue ID and creation time can recur after CUPS spool state is reset.
+    # Only the UUID makes a stored claim safe to reuse for later requests.
+    if not claim.job_uuid:
+        return False
+    actual = claim_for_job(claim.user_id, job, queue_name)
+    return actual is not None and (
+        actual.job_id == claim.job_id
+        and actual.printer_uri == claim.printer_uri
+        and actual.created_at == claim.created_at
+        and actual.job_uuid == claim.job_uuid
+    )
+
+
+def get_user_job_claims(database: Database, current_user: User) -> list[JobClaim]:
+    try:
+        return database.list_job_claims(current_user.id)
     except Exception as exc:
-        LOGGER.warning(
-            "Failed to check persisted CUPS job ownership for user %s job %s: %s",
-            current_user.id,
-            job_id,
-            exc,
-        )
-        owns_job = False
-    if not owns_job:
+        LOGGER.warning("Failed to read job claims for user %s: %s", current_user.id, exc)
+        try:
+            return database.list_fallback_job_claims(current_user.id)
+        except Exception:
+            LOGGER.exception("Failed to read fallback job claims for user %s", current_user.id)
+            return []
+
+
+def require_user_cups_job(
+    database: Database, current_user: User, job: dict[str, Any] | None, queue_name: str,
+) -> None:
+    if job is None or not any(
+        claim_matches_job(claim, job, queue_name)
+        for claim in get_user_job_claims(database, current_user)
+    ):
         raise HTTPException(status_code=404, detail="Job not found")
-
-
-def get_user_cups_job_ids(database: Database, current_user: User) -> set[int]:
-    try:
-        persisted_job_ids = database.list_user_cups_job_ids(current_user.id)
-    except Exception as exc:
-        LOGGER.warning(
-            "Failed to list persisted CUPS job ownership for user %s: %s",
-            current_user.id,
-            exc,
-        )
-        persisted_job_ids = set()
-    return persisted_job_ids | get_unpersisted_jobs(current_user.id)
 
 
 def filter_jobs_by_owner(
     jobs: list[dict[str, Any]],
-    allowed_job_ids: set[int],
+    claims: list[JobClaim],
+    queue_name: str,
 ) -> list[dict[str, Any]]:
-    return [job for job in jobs if int(job.get("job_id", -1)) in allowed_job_ids]
+    by_id: dict[int, list[JobClaim]] = {}
+    for claim in claims:
+        by_id.setdefault(claim.job_id, []).append(claim)
+    return [
+        job for job in jobs
+        if any(
+            claim_matches_job(claim, job, queue_name)
+            for claim in by_id.get(job.get("job_id"), [])
+        )
+    ]
 
 
-def user_job_counts(client: CupsClient, allowed_job_ids: set[int]) -> dict[str, int]:
+def user_job_counts(client: CupsClient, claims: list[JobClaim]) -> dict[str, int]:
     return {
-        scope: len(filter_jobs_by_owner(client.list_jobs(scope), allowed_job_ids))
+        scope: len(filter_jobs_by_owner(client.list_jobs(scope), claims, client.queue_name))
         for scope in JOB_SCOPE_TO_CUPS
     }
-
-
-def remember_unpersisted_job(user_id: int, job_id: int) -> None:
-    with UNPERSISTED_JOB_LOCK:
-        UNPERSISTED_JOB_OWNERS.setdefault(user_id, set()).add(job_id)
-
-
-def get_unpersisted_jobs(user_id: int) -> set[int]:
-    with UNPERSISTED_JOB_LOCK:
-        return set(UNPERSISTED_JOB_OWNERS.get(user_id, set()))
 
 
 def parse_page_number(page: str) -> int:

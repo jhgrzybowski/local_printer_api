@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import tempfile
+import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -22,12 +25,23 @@ class User:
     display_name: str | None
     created_at: str
     updated_at: str
+    identity_id: str
+
+
+@dataclass(frozen=True)
+class JobClaim:
+    user_id: int
+    job_id: int
+    printer_uri: str
+    created_at: int
+    job_uuid: str | None
 
 
 class Database:
     def __init__(self, path: str | Path = DB_PATH) -> None:
         self.path = Path(path)
         self.migrate()
+        self._database_id = self.database_id()
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -56,7 +70,8 @@ class Database:
                     password_salt TEXT NOT NULL,
                     password_iterations INTEGER NOT NULL,
                     created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    identity_id TEXT NOT NULL UNIQUE
                 );
 
                 CREATE TABLE IF NOT EXISTS sessions (
@@ -80,6 +95,11 @@ class Database:
                     updated_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS app_metadata (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS print_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -101,6 +121,43 @@ class Database:
                     ON print_history(user_id, created_at DESC);
                 """
             )
+            # Serialize the read/check/ALTER sequence across worker processes.
+            # CREATE IF NOT EXISTS above is safe in autocommit mode, while the
+            # identity-column check must see the preceding writer's changes.
+            connection.execute("BEGIN IMMEDIATE")
+            user_columns = {row["name"] for row in connection.execute("PRAGMA table_info(users)")}
+            if "identity_id" not in user_columns:
+                connection.execute("ALTER TABLE users ADD COLUMN identity_id TEXT")
+            for row in connection.execute("SELECT id FROM users WHERE identity_id IS NULL"):
+                connection.execute(
+                    "UPDATE users SET identity_id = ? WHERE id = ?",
+                    (str(uuid.uuid4()), int(row["id"])),
+                )
+            connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_identity_id ON users(identity_id)"
+            )
+            columns = {row["name"] for row in connection.execute("PRAGMA table_info(print_history)")}
+            for name, definition in (
+                ("cups_printer_uri", "TEXT"),
+                ("cups_created_at", "INTEGER"),
+                ("cups_job_uuid", "TEXT"),
+            ):
+                if name not in columns:
+                    connection.execute(f"ALTER TABLE print_history ADD COLUMN {name} {definition}")
+            connection.execute(
+                "INSERT OR IGNORE INTO app_metadata (key, value) VALUES ('database_id', ?)",
+                (str(uuid.uuid4()),),
+            )
+
+    def database_id(self) -> str:
+        """Read the identity from the live database, not a cached path or inode."""
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT value FROM app_metadata WHERE key = 'database_id'"
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("Database identity is missing")
+        return str(uuid.UUID(str(row["value"])))
 
     def create_user(
         self,
@@ -116,9 +173,9 @@ class Database:
                 """
                 INSERT INTO users (
                     username, display_name, password_hash, password_salt,
-                    password_iterations, created_at, updated_at
+                    password_iterations, created_at, updated_at, identity_id
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     username,
@@ -128,6 +185,7 @@ class Database:
                     password_iterations,
                     now,
                     now,
+                    str(uuid.uuid4()),
                 ),
             )
             user_id = int(cursor.lastrowid)
@@ -141,7 +199,7 @@ class Database:
             return connection.execute(
                 """
                 SELECT id, username, display_name, password_hash, password_salt,
-                       password_iterations, created_at, updated_at
+                       password_iterations, created_at, updated_at, identity_id
                 FROM users
                 WHERE username = ?
                 """,
@@ -152,7 +210,7 @@ class Database:
         with self.connect() as connection:
             row = connection.execute(
                 """
-                SELECT id, username, display_name, created_at, updated_at
+                SELECT id, username, display_name, created_at, updated_at, identity_id
                 FROM users
                 WHERE id = ?
                 """,
@@ -187,7 +245,7 @@ class Database:
             row = connection.execute(
                 """
                 SELECT users.id, users.username, users.display_name,
-                       users.created_at, users.updated_at
+                       users.created_at, users.updated_at, users.identity_id
                 FROM sessions
                 JOIN users ON users.id = sessions.user_id
                 WHERE sessions.token_hash = ?
@@ -251,6 +309,7 @@ class Database:
         cups_job_id: int,
         warnings: list[str],
         status: str = "submitted",
+        job_claim: JobClaim | None = None,
     ) -> int:
         now = utc_now()
         with self.connect() as connection:
@@ -259,9 +318,10 @@ class Database:
                 INSERT INTO print_history (
                     user_id, file_id, original_filename, detected_mime, size_bytes,
                     page_count, requested_options_json, applied_options_json,
-                    cups_job_id, warnings_json, status, created_at, updated_at
+                    cups_job_id, warnings_json, status, created_at, updated_at,
+                    cups_printer_uri, cups_created_at, cups_job_uuid
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     user_id,
@@ -277,6 +337,9 @@ class Database:
                     status,
                     now,
                     now,
+                    job_claim.printer_uri if job_claim else None,
+                    job_claim.created_at if job_claim else None,
+                    job_claim.job_uuid if job_claim else None,
                 ),
             )
             return int(cursor.lastrowid)
@@ -306,30 +369,60 @@ class Database:
             ).fetchone()
         return history_from_row(row) if row is not None else None
 
-    def user_has_cups_job(self, user_id: int, cups_job_id: int) -> bool:
-        with self.connect() as connection:
-            row = connection.execute(
-                """
-                SELECT 1
-                FROM print_history
-                WHERE user_id = ? AND cups_job_id = ?
-                LIMIT 1
-                """,
-                (user_id, cups_job_id),
-            ).fetchone()
-        return row is not None
-
-    def list_user_cups_job_ids(self, user_id: int) -> set[int]:
+    def list_job_claims(self, user_id: int) -> list[JobClaim]:
         with self.connect() as connection:
             rows = connection.execute(
                 """
-                SELECT DISTINCT cups_job_id
+                SELECT user_id, cups_job_id, cups_printer_uri, cups_created_at, cups_job_uuid
                 FROM print_history
-                WHERE user_id = ?
+                WHERE user_id = ? AND cups_printer_uri IS NOT NULL
+                  AND cups_created_at IS NOT NULL
                 """,
                 (user_id,),
             ).fetchall()
-        return {int(row["cups_job_id"]) for row in rows}
+        claims = [
+            JobClaim(int(row["user_id"]), int(row["cups_job_id"]),
+                     str(row["cups_printer_uri"]), int(row["cups_created_at"]),
+                     row["cups_job_uuid"])
+            for row in rows
+        ]
+        return claims + self.list_fallback_job_claims(user_id)
+
+    def save_fallback_job_claim(self, claim: JobClaim, user_identity_id: str) -> None:
+        """Save a small ownership record when the larger history write fails."""
+        # The ID was loaded at initialization, so this write still works when a
+        # transient SQLite lock caused the history insert to fail.
+        directory = self.path.parent / "job-claims" / self._database_id
+        directory.mkdir(parents=True, exist_ok=True)
+        target = directory / f"{claim.user_id}-{claim.job_id}.json"
+        payload = json.dumps({**claim.__dict__, "user_identity_id": user_identity_id}, sort_keys=True)
+        fd, temporary = tempfile.mkstemp(dir=directory, prefix=".claim-")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, target)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+
+    def list_fallback_job_claims(self, user_id: int) -> list[JobClaim]:
+        directory = self.path.parent / "job-claims" / self.database_id()
+        claims = []
+        user = self.get_user_by_id(user_id)
+        if user is None:
+            return claims
+        for path in directory.glob(f"{user_id}-*.json"):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                identity_id = data.pop("user_identity_id")
+                claim = JobClaim(**data)
+                if claim.user_id == user_id and identity_id == user.identity_id:
+                    claims.append(claim)
+            except (OSError, ValueError, TypeError, KeyError):
+                continue
+        return claims
 
 
 def user_from_row(row: sqlite3.Row) -> User:
@@ -339,6 +432,7 @@ def user_from_row(row: sqlite3.Row) -> User:
         display_name=row["display_name"],
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
+        identity_id=str(row["identity_id"]),
     )
 
 

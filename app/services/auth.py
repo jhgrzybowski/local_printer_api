@@ -86,6 +86,7 @@ class AuthService:
             display_name=row["display_name"],
             created_at=str(row["created_at"]),
             updated_at=str(row["updated_at"]),
+            identity_id=str(row["identity_id"]),
         )
         return self.create_session(user, user_agent, ip_address)
 
@@ -160,4 +161,4 @@ def truncate_metadata(value: str | None) -> str | None:
 
 
 def public_user(user: User) -> dict[str, Any]:
-    return asdict(user)
+    return {key: value for key, value in asdict(user).items() if key != "identity_id"}
