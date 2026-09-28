@@ -507,6 +507,10 @@ def claim_for_job(user_id: int, job: dict[str, Any] | None, queue_name: str) -> 
 
 
 def claim_matches_job(claim: JobClaim, job: dict[str, Any], queue_name: str) -> bool:
+    # Queue ID and creation time can recur after CUPS spool state is reset.
+    # Only the UUID makes a stored claim safe to reuse for later requests.
+    if not claim.job_uuid:
+        return False
     actual = claim_for_job(claim.user_id, job, queue_name)
     return actual is not None and (
         actual.job_id == claim.job_id

@@ -219,6 +219,26 @@ def grant_cups_job(database: Database, job_id: int, user_id: int = 1) -> None:
     )
 
 
+def test_job_without_uuid_cannot_be_managed_from_durable_claim(
+    client: TestClient, isolated_database: Database,
+) -> None:
+    cups = FakeCupsClient()
+    cups.jobs[123]["job_uuid"] = None
+    app.dependency_overrides[get_cups_client] = lambda: cups
+    user_id = 1
+    isolated_database.insert_print_history(
+        user_id=user_id, file_id="uuidless-file", original_filename="job.pdf",
+        detected_mime="application/pdf", size_bytes=1, page_count=1,
+        requested_options={}, applied_options={}, cups_job_id=123, warnings=[],
+        job_claim=JobClaim(user_id, 123, "ipp://localhost/printers/Canon_MG5350", 1123, None),
+    )
+
+    assert client.get("/jobs/123").status_code == 404
+    assert client.delete("/jobs/123").status_code == 404
+    assert client.post("/jobs/123/forget").status_code == 404
+    assert all(job["job_id"] != 123 for job in client.get("/jobs").json()["jobs"])
+
+
 def test_print_pdf_with_mocked_cups(client: TestClient) -> None:
     file_id = upload_pdf(client, 3)
 
