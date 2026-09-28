@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -350,6 +351,41 @@ class Database:
                     claim.job_uuid, status, status, status,
                 ),
             )
+
+    def forgotten_job_marker_path(self, claim: JobClaim) -> Path:
+        identity = json.dumps(claim.__dict__, sort_keys=True).encode("utf-8")
+        digest = hashlib.sha256(identity).hexdigest()
+        return self.path.parent / "history-purges" / f"{claim.user_id}-{digest}.json"
+
+    def save_forgotten_job_marker(self, claim: JobClaim) -> None:
+        """Keep successful purge intent when SQLite cannot record it yet."""
+        target = self.forgotten_job_marker_path(claim)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(dir=target.parent, prefix=".purge-")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                json.dump(claim.__dict__, stream, sort_keys=True)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, target)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+
+    def remove_forgotten_job_marker(self, claim: JobClaim) -> None:
+        self.forgotten_job_marker_path(claim).unlink(missing_ok=True)
+
+    def recover_forgotten_job_markers(self, user_id: int) -> None:
+        directory = self.path.parent / "history-purges"
+        for path in directory.glob(f"{user_id}-*.json"):
+            try:
+                claim = JobClaim(**json.loads(path.read_text(encoding="utf-8")))
+            except (OSError, ValueError, TypeError):
+                continue
+            if claim.user_id != user_id or path != self.forgotten_job_marker_path(claim):
+                continue
+            self.update_print_history_status_for_claim(claim, "forgotten")
+            path.unlink(missing_ok=True)
 
     def list_job_claims(self, user_id: int) -> list[JobClaim]:
         with self.connect() as connection:

@@ -352,7 +352,15 @@ def forget_job(
         raise HTTPException(status_code=409, detail=result)
     claim = claim_for_job(current_user.id, job, client.queue_name)
     if claim is not None:
-        persist_history_status_after_action(database, claim, "forgotten")
+        try:
+            database.save_forgotten_job_marker(claim)
+        except Exception:
+            LOGGER.exception("Failed to save purge marker for CUPS job %s", claim.job_id)
+        if persist_history_status_after_action(database, claim, "forgotten"):
+            try:
+                database.remove_forgotten_job_marker(claim)
+            except Exception:
+                LOGGER.exception("Failed to remove purge marker for CUPS job %s", claim.job_id)
     return result
 
 
@@ -532,7 +540,7 @@ def history_cups_state(job: dict[str, Any] | None) -> str | None:
     return state if isinstance(state, str) and state in HISTORY_CUPS_STATES else None
 
 
-def persist_history_status_after_action(database: Database, claim: JobClaim, status: str) -> None:
+def persist_history_status_after_action(database: Database, claim: JobClaim, status: str) -> bool:
     try:
         database.update_print_history_status_for_claim(claim, status)
     except Exception:
@@ -540,12 +548,18 @@ def persist_history_status_after_action(database: Database, claim: JobClaim, sta
             "Failed to persist print history status %s for CUPS job %s",
             status, claim.job_id,
         )
+        return False
+    return True
 
 
 def refreshed_user_history(
     database: Database, current_user: User, client: CupsClient,
     history_id: int | None = None,
 ) -> list[dict[str, Any]]:
+    try:
+        database.recover_forgotten_job_markers(current_user.id)
+    except Exception:
+        LOGGER.exception("Failed to recover purge markers for user %s", current_user.id)
     if history_id is None:
         history = database.list_print_history(current_user.id)
     else:
@@ -573,8 +587,15 @@ def refreshed_user_history(
         job = jobs.get(claim.job_id)
         state = history_cups_state(job)
         if job is not None and state is not None and claim_matches_job(claim, job, client.queue_name):
-            database.update_print_history_status_for_claim(claim, state)
-            changed = True
+            try:
+                database.update_print_history_status_for_claim(claim, state)
+            except Exception:
+                LOGGER.exception(
+                    "Failed to persist refreshed print history status %s for CUPS job %s",
+                    state, claim.job_id,
+                )
+            else:
+                changed = True
     if not changed:
         return history
     if history_id is None:
