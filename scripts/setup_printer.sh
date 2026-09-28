@@ -116,7 +116,7 @@ model_nickname() {
 current_ppd_nickname() {
   local ppd_path="$PPD_DIR/$QUEUE_NAME.ppd"
   [[ -r "$ppd_path" ]] || return 1
-  sed -n 's/^\*NickName: "\(.*\)"$/\1/p' "$ppd_path"
+  sed -n 's/^\*NickName:[[:space:]]*"\(.*\)"$/\1/p' "$ppd_path"
 }
 
 print_status() {

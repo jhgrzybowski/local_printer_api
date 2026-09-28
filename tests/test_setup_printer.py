@@ -61,7 +61,7 @@ esac
     ppd_dir = tmp_path / "ppd"
     ppd_dir.mkdir()
     if nickname is not None:
-        (ppd_dir / "Canon_MG5350.ppd").write_text(f'*NickName: "{nickname}"\n')
+        (ppd_dir / "Canon_MG5350.ppd").write_text(f'*NickName:\t      "{nickname}"\n')
 
     log = tmp_path / "calls.log"
     env = os.environ.copy()
