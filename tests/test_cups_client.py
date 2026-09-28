@@ -57,6 +57,70 @@ def test_capabilities_fail_when_queue_is_missing() -> None:
         client.get_option_capabilities()
 
 
+@pytest.mark.parametrize("accepting_jobs", [True, False])
+def test_get_queue_queries_accepting_jobs_explicitly(
+    monkeypatch: pytest.MonkeyPatch, accepting_jobs: bool,
+) -> None:
+    printer_uri = "ipp://localhost/printers/Canon_MG5350"
+
+    class Connection:
+        def getPrinters(self) -> dict[str, Any]:
+            return {
+                "Canon_MG5350": {
+                    "device-uri": "lpd://192.168.100.100/PASSTHRU",
+                    "printer-state": 3,
+                    "printer-uri-supported": [printer_uri],
+                }
+            }
+
+        def getPrinterAttributes(
+            self, *, uri: str, requested_attributes: list[str],
+        ) -> dict[str, bool]:
+            assert uri == printer_uri
+            assert requested_attributes == ["printer-is-accepting-jobs"]
+            return {"printer-is-accepting-jobs": accepting_jobs}
+
+    client = CupsClient()
+    client._connection = lambda: Connection()  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        "app.services.cups_client.probe_printer_reachability",
+        lambda _: {"checked": True, "reachable": True},
+    )
+
+    result = client.get_queue()
+
+    assert result["attributes"]["printer-is-accepting-jobs"] is accepting_jobs
+
+
+def test_get_queue_keeps_queue_snapshot_when_accepting_jobs_query_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Connection:
+        def getPrinters(self) -> dict[str, Any]:
+            return {
+                "Canon_MG5350": {
+                    "device-uri": "lpd://192.168.100.100/PASSTHRU",
+                    "printer-state": 3,
+                    "printer-uri-supported": ["ipp://localhost/printers/Canon_MG5350"],
+                }
+            }
+
+        def getPrinterAttributes(self, **_: Any) -> dict[str, bool]:
+            raise RuntimeError("attribute query unavailable")
+
+    client = CupsClient()
+    client._connection = lambda: Connection()  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        "app.services.cups_client.probe_printer_reachability",
+        lambda _: {"checked": True, "reachable": True},
+    )
+
+    result = client.get_queue()
+
+    assert result["exists"] is True
+    assert "printer-is-accepting-jobs" not in result["attributes"]
+
+
 def test_capabilities_fail_when_both_sources_fail() -> None:
     client = CupsClient("Canon_MG5350")
 
@@ -102,6 +166,43 @@ def test_list_jobs_maps_active_scope_to_not_completed() -> None:
 
     assert connection.which_jobs == ["not-completed"]
     assert [job["job_id"] for job in jobs] == [1]
+
+
+def test_list_jobs_fetches_details_when_bulk_snapshot_omits_uuid() -> None:
+    snapshot = {
+        "job-name": "finished.pdf",
+        "job-state": 9,
+        "job-printer-uri": "ipp://localhost/printers/Canon_MG5350",
+        "time-at-creation": 1000,
+    }
+    detailed = {**snapshot, "job-uuid": "urn:uuid:job-21"}
+
+    class Connection:
+        detail_queries = 0
+
+        def getJobs(
+            self,
+            which_jobs: str = "not-completed",
+            requested_attributes: list[str] | None = None,
+        ) -> dict[int, dict[str, Any]]:
+            assert which_jobs == "all"
+            assert requested_attributes == ["all"]
+            return {21: snapshot}
+
+        def getJobAttributes(self, job_id: int) -> dict[str, Any]:
+            assert job_id == 21
+            self.detail_queries += 1
+            return detailed
+
+    connection = Connection()
+    client = CupsClient()
+    client._connection = lambda: connection  # type: ignore[method-assign]
+
+    jobs = client.list_jobs("all")
+
+    assert jobs[0]["job_uuid"] == "urn:uuid:job-21"
+    assert jobs[0]["state"] == "completed"
+    assert connection.detail_queries == 1
 
 
 def test_normalize_job_marks_active_and_terminal_states() -> None:

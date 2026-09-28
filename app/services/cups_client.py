@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,7 @@ JOB_REQUESTED_ATTRIBUTES = ["all"]
 
 ACTIVE_JOB_STATES = {3, 4, 5, 6}
 TERMINAL_JOB_STATES = {7, 8, 9}
+LOGGER = logging.getLogger(__name__)
 
 
 class CupsClient:
@@ -56,6 +58,35 @@ class CupsClient:
             return {"name": self.queue_name, "exists": False, "attributes": {}}
 
         attributes = dict(printers[self.queue_name])
+        printer_uris = attributes.get("printer-uri-supported")
+        if isinstance(printer_uris, str):
+            printer_uri = printer_uris
+        elif isinstance(printer_uris, list | tuple):
+            printer_uri = next(
+                (uri for uri in printer_uris if isinstance(uri, str) and uri),
+                None,
+            )
+        else:
+            printer_uri = None
+
+        # CUPS getPrinters() omits this attribute on some versions. Query it
+        # explicitly because print readiness must distinguish false from unknown.
+        if printer_uri:
+            try:
+                attributes.update(
+                    connection.getPrinterAttributes(
+                        uri=printer_uri,
+                        requested_attributes=["printer-is-accepting-jobs"],
+                    )
+                )
+            except Exception as exc:
+                # Keep readiness unknown if CUPS cannot provide the attribute.
+                LOGGER.warning(
+                    "Could not query printer-is-accepting-jobs for %s: %s",
+                    self.queue_name,
+                    exc,
+                )
+
         return {
             "name": self.queue_name,
             "exists": True,
@@ -126,7 +157,25 @@ class CupsClient:
             )
         except Exception as exc:
             raise CupsClientError(f"CUPS job query failed: {exc}") from exc
-        return [normalize_job(job_id, attrs) for job_id, attrs in jobs.items()]
+
+        normalized_jobs: list[dict[str, Any]] = []
+        for job_id, attrs in jobs.items():
+            job = normalize_job(job_id, attrs)
+            if not job["job_uuid"]:
+                try:
+                    detailed = self._get_job_from_connection(connection, int(job_id))
+                except CupsClientError as exc:
+                    LOGGER.warning("Could not load identity for CUPS job %s: %s", job_id, exc)
+                    detailed = None
+                if (
+                    detailed is not None
+                    and detailed["printer_uri"] == job["printer_uri"]
+                    and detailed["created_at"] == job["created_at"]
+                    and detailed["state_code"] == job["state_code"]
+                ):
+                    job = detailed
+            normalized_jobs.append(job)
+        return normalized_jobs
 
     def get_job(self, job_id: int) -> dict[str, Any] | None:
         connection = self._connection()
