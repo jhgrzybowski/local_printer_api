@@ -252,7 +252,7 @@ def print_file(
         fallback_saved = False
         if job_claim is not None:
             try:
-                database.save_fallback_job_claim(job_claim)
+                database.save_fallback_job_claim(job_claim, current_user.identity_id)
                 fallback_saved = True
             except Exception:
                 LOGGER.exception("Could not save fallback ownership for CUPS job %s", result["job_id"])
