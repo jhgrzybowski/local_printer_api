@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import time
 from pathlib import Path
 
 import pytest
@@ -84,6 +86,25 @@ def test_claim_rejects_ownership_transfer_and_missing_data(tmp_path: Path) -> No
     with pytest.raises(LegacyClaimError, match="not found"):
         storage.claim_legacy_file(FILE_ID, 2)
     assert storage.list_unowned_records() == []
+
+
+def test_legacy_claim_keeps_upload_during_cleanup(tmp_path: Path, monkeypatch) -> None:
+    storage = TempFileStorage(tmp_path)
+    create_legacy_upload(storage)
+    old = time.time() - 100 * 86400
+    os.utime(storage.metadata_path(FILE_ID), (old, old))
+    original_get_record = storage.get_record
+
+    def cleanup_during_claim(file_id: str):
+        storage.prune_expired(time.time() - 7 * 86400, set())
+        return original_get_record(file_id)
+
+    monkeypatch.setattr(storage, "get_record", cleanup_during_claim)
+    claimed = storage.claim_legacy_file(FILE_ID, 1)
+
+    assert claimed.owner_user_id == 1
+    assert storage.file_path(FILE_ID).exists()
+    assert original_get_record(FILE_ID).owner_user_id == 1
 
 
 def test_claim_rejects_unknown_account_without_creating_database(

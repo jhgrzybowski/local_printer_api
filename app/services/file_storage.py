@@ -162,33 +162,35 @@ class TempFileStorage:
         # cannot both claim the same original inode for different users.
         with (self.metadata_dir / f"{file_id}.claim.lock").open("a+b") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
-            record = self.get_record(file_id)
-            if record is None or record.file_id != file_id:
-                raise LegacyClaimError("Upload metadata is invalid")
-            if record.owner_user_id is not None:
-                raise LegacyClaimError("Upload already has an owner")
-            if not self.file_path(file_id).is_file():
-                raise LegacyClaimError("Uploaded file not found")
-
-            claimed = replace(record, owner_user_id=owner_user_id)
-            temporary_path: Path | None = None
             try:
-                original_stat = path.stat()
-                with tempfile.NamedTemporaryFile(
-                    mode="w", encoding="utf-8", dir=self.metadata_dir,
-                    prefix=f".{file_id}.", suffix=".tmp", delete=False,
-                ) as temporary:
-                    temporary_path = Path(temporary.name)
-                    temporary.write(json.dumps(asdict(claimed), sort_keys=True))
-                    temporary.flush()
-                    os.fchmod(temporary.fileno(), stat.S_IMODE(original_stat.st_mode))
-                    os.fchown(temporary.fileno(), original_stat.st_uid, original_stat.st_gid)
-                    os.fsync(temporary.fileno())
-                os.replace(temporary_path, path)
-            finally:
-                if temporary_path is not None:
-                    temporary_path.unlink(missing_ok=True)
-            return claimed
+                with self.lease(file_id):
+                    record = self.get_record(file_id)
+                    if record is None or record.file_id != file_id:
+                        raise LegacyClaimError("Upload metadata is invalid")
+                    if record.owner_user_id is not None:
+                        raise LegacyClaimError("Upload already has an owner")
+
+                    claimed = replace(record, owner_user_id=owner_user_id)
+                    temporary_path: Path | None = None
+                    try:
+                        original_stat = path.stat()
+                        with tempfile.NamedTemporaryFile(
+                            mode="w", encoding="utf-8", dir=self.metadata_dir,
+                            prefix=f".{file_id}.", suffix=".tmp", delete=False,
+                        ) as temporary:
+                            temporary_path = Path(temporary.name)
+                            temporary.write(json.dumps(asdict(claimed), sort_keys=True))
+                            temporary.flush()
+                            os.fchmod(temporary.fileno(), stat.S_IMODE(original_stat.st_mode))
+                            os.fchown(temporary.fileno(), original_stat.st_uid, original_stat.st_gid)
+                            os.fsync(temporary.fileno())
+                        os.replace(temporary_path, path)
+                    finally:
+                        if temporary_path is not None:
+                            temporary_path.unlink(missing_ok=True)
+                    return claimed
+            except StorageError as exc:
+                raise LegacyClaimError("Upload or metadata not found") from exc
 
     def file_path(self, file_id: str) -> Path:
         return self.files_dir / file_id
