@@ -4,6 +4,7 @@ set -euo pipefail
 QUEUE_NAME="${QUEUE_NAME:-Canon_MG5350}"
 PRINTER_IP="${PRINTER_IP:-192.168.100.100}"
 DEVICE_URI="${DEVICE_URI:-lpd://${PRINTER_IP}/PASSTHRU}"
+PPD_DIR="${PPD_DIR:-/etc/cups/ppd}"
 FORCE="${FORCE:-0}"
 RUN_TEST=0
 
@@ -27,6 +28,7 @@ Environment overrides:
   PRINTER_IP   default: 192.168.100.100
   DEVICE_URI   default: lpd://192.168.100.100/PASSTHRU
   MODEL        default: auto-detected Gutenprint MG5350/MG5300 model
+  PPD_DIR      default: /etc/cups/ppd
   FORCE=1      reconfigure an existing mismatched queue
 
 Options:
@@ -72,10 +74,6 @@ current_device_uri() {
   lpstat -v "$QUEUE_NAME" 2>/dev/null | sed -n "s/^device for ${QUEUE_NAME}: //p"
 }
 
-lpoptions_output() {
-  lpoptions -p "$QUEUE_NAME" -l 2>/dev/null || true
-}
-
 detect_model() {
   if [[ -n "${MODEL:-}" ]]; then
     echo "$MODEL"
@@ -106,15 +104,19 @@ EOF
 }
 
 current_model_matches() {
-  local options
-  options="$(lpoptions_output)"
+  [[ -n "$expected_nickname" ]] &&
+    [[ "$(current_ppd_nickname)" == "$expected_nickname" ]]
+}
 
-  # The exact driver URI is not exposed by lpstat on all CUPS versions and
-  # /etc/cups/ppd may be root-readable only. These Gutenprint-specific options
-  # are a practical non-root signal that the verified driver family is active.
-  grep -q '^ColorModel/' <<<"$options" &&
-    grep -q '^StpQuality/' <<<"$options" &&
-    grep -q '^Duplex/' <<<"$options"
+model_nickname() {
+  # lpinfo's description is the NickName embedded in the generated CUPS PPD.
+  lpinfo -m | awk -v model="$MODEL" '$1 == model { print substr($0, length($1) + 2); exit }'
+}
+
+current_ppd_nickname() {
+  local ppd_path="$PPD_DIR/$QUEUE_NAME.ppd"
+  [[ -r "$ppd_path" ]] || return 1
+  sed -n 's/^\*NickName: "\(.*\)"$/\1/p' "$ppd_path"
 }
 
 print_status() {
@@ -148,6 +150,7 @@ require_command cupsenable
 require_command lp
 
 MODEL="$(detect_model)"
+expected_nickname="$(model_nickname)"
 
 echo "Queue name: $QUEUE_NAME"
 echo "Printer IP: $PRINTER_IP"
@@ -159,7 +162,7 @@ echo "Test print: $RUN_TEST"
 if queue_exists; then
   existing_uri="$(current_device_uri)"
   if [[ "$existing_uri" == "$DEVICE_URI" ]] && current_model_matches; then
-    echo "Queue already exists with expected LPD URI and Gutenprint options. No changes needed."
+    echo "Queue already exists with expected device URI and model. No changes needed."
     test_submitted="no"
     if [[ "$RUN_TEST" == "1" ]]; then
       submit_test_print
@@ -170,7 +173,7 @@ if queue_exists; then
     echo "Summary:"
     echo "  Queue: $QUEUE_NAME"
     echo "  Device URI: $DEVICE_URI"
-    echo "  Model: existing Gutenprint MG5350/MG5300-compatible queue"
+    echo "  Model: $MODEL"
     echo "  Test job submitted: $test_submitted"
     exit 0
   fi
@@ -178,11 +181,8 @@ if queue_exists; then
   echo "Queue already exists but does not match the verified setup."
   echo "Existing URI: ${existing_uri:-unknown}"
   echo "Expected URI: $DEVICE_URI"
-  if current_model_matches; then
-    echo "Existing model signal: Gutenprint-compatible options detected"
-  else
-    echo "Existing model signal: expected Gutenprint options not detected"
-  fi
+  echo "Existing PPD NickName: $(current_ppd_nickname || echo 'unavailable (check PPD permissions)')"
+  echo "Expected PPD NickName: ${expected_nickname:-unavailable (model not listed by lpinfo -m)}"
 
   if [[ "$FORCE" != "1" ]]; then
     cat >&2 <<EOF

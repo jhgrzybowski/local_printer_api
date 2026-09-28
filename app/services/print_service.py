@@ -23,6 +23,7 @@ class PreparedPrint:
     file_path: Path
     title: str
     selected_pages: list[int] | None
+    temporary: bool = False
 
 
 def ensure_printer_ready(client: CupsClient) -> dict[str, object]:
@@ -41,9 +42,8 @@ def ensure_printer_ready(client: CupsClient) -> dict[str, object]:
         raise PrintRequestError(f"Queue {client.queue_name} is stopped", 409)
     if status["accepting_jobs"] is False:
         raise PrintRequestError(f"Queue {client.queue_name} is not accepting jobs", 409)
-
-    if any("offline" in reason or reason == "network-unreachable" for reason in reasons):
-        raise PrintRequestError(f"Printer appears offline: {', '.join(reasons)}", 503)
+    if not status["ready_for_print"]:
+        raise PrintRequestError(f"Queue {client.queue_name} readiness is unknown", 503)
     return status
 
 
@@ -67,7 +67,7 @@ def prepare_print_file(
             selected_pages = filter_pdf_pages(source, filtered, options.pages, record.page_count)
         except PageRangeError as exc:
             raise PrintRequestError(exc.message, 400) from exc
-        return PreparedPrint(filtered, f"{record.original_filename} pages {options.pages}", selected_pages)
+        return PreparedPrint(filtered, f"{record.original_filename} pages {options.pages}", selected_pages, True)
 
     if record.detected_mime in {"image/png", "image/jpeg"}:
         try:
@@ -91,15 +91,14 @@ def submit_print_job(
     prepared = prepare_print_file(storage, record, options)
     try:
         capabilities = client.get_option_capabilities()
-    except CupsClientError as exc:
-        raise PrintRequestError(str(exc), 503) from exc
-    mapped = options.to_cups_options(capabilities)
-    title = _safe_title(prepared.title)
-
-    try:
+        mapped = options.to_cups_options(capabilities)
+        title = _safe_title(prepared.title)
         job_id = client.print_file(prepared.file_path, title, mapped.applied_options)
     except CupsClientError as exc:
         raise PrintRequestError(str(exc), 503) from exc
+    finally:
+        if prepared.temporary:
+            prepared.file_path.unlink(missing_ok=True)
 
     warnings = list(mapped.warnings)
     if prepared.selected_pages is not None:

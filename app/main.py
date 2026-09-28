@@ -4,6 +4,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
+import yaml
 from fastapi import (
     Body,
     Depends,
@@ -79,10 +80,20 @@ def openapi_yaml() -> FileResponse:
     return FileResponse(OPENAPI_YAML_PATH, media_type="application/yaml")
 
 
+def canonical_openapi() -> dict[str, Any]:
+    """Serve the maintained YAML spec through FastAPI's JSON OpenAPI route."""
+    if not OPENAPI_YAML_PATH.exists():
+        raise HTTPException(status_code=404, detail="openapi.yaml not found")
+    return yaml.safe_load(OPENAPI_YAML_PATH.read_text(encoding="utf-8"))
+
+
+app.openapi = canonical_openapi
+
+
 @app.get("/docs", include_in_schema=False)
 def swagger_docs() -> HTMLResponse:
     return get_swagger_ui_html(
-        openapi_url="/openapi.yaml",
+        openapi_url="/openapi.json",
         title="Local Printer API Docs",
     )
 
@@ -351,7 +362,7 @@ def list_previews(
             {
                 "page": index,
                 "url": f"/files/{record.file_id}/preview/{index}",
-                "size_bytes": path.stat().st_size,
+                **({"size_bytes": path.stat().st_size} if path.exists() else {}),
             }
             for index, path in enumerate(paths, start=1)
         ],
@@ -431,6 +442,8 @@ def get_user_file_record(
     current_user: User,
 ) -> StoredFile:
     record = storage.get_record(file_id)
+    # Legacy unowned uploads must be assigned by a local operator. Return the
+    # same 404 as an absent or other user's file to avoid disclosing file IDs.
     if record is None or record.owner_user_id != current_user.id:
         raise HTTPException(status_code=404, detail="File not found")
     return record

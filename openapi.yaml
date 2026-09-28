@@ -745,6 +745,7 @@ components:
         - exists
         - state
         - enabled
+        - ready_for_print
         - reasons
         - cups
       properties:
@@ -765,8 +766,15 @@ components:
           type:
             - boolean
             - "null"
+          description: Raw CUPS printer-is-accepting-jobs value; may remain true when the printer is offline.
         enabled:
+          type:
+            - boolean
+            - "null"
+          description: Whether the CUPS printer-state is not stopped; does not imply printer reachability.
+        ready_for_print:
           type: boolean
+          description: Whether this API currently allows print submission based on CUPS state, queue acceptance, and the network probe. Recheck at submission time because status can change.
         message:
           type: string
         device_uri:
@@ -894,7 +902,7 @@ components:
 
     PreviewPage:
       type: object
-      required: [page, url, size_bytes]
+      required: [page, url]
       properties:
         page:
           type: integer
@@ -905,6 +913,7 @@ components:
         size_bytes:
           type: integer
           minimum: 0
+          description: Present after the preview page has been rendered
 
     PreviewResponse:
       type: object
