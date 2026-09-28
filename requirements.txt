@@ -1,7 +1,7 @@
-fastapi
-uvicorn
-python-multipart
-pypdf
-pdf2image
-pillow
-PyYAML
+fastapi==0.141.1
+uvicorn==0.54.0
+python-multipart==0.0.32
+pypdf==6.19.0
+pdf2image==1.17.0
+pillow==12.2.0
+PyYAML==6.0.3

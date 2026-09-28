@@ -141,18 +141,19 @@ For stable LAN deployment, run the API in Docker while keeping CUPS on the host:
 
 ```bash
 docker compose up -d --build
-export PRINTER_BACKEND="http://${BACKEND_HOST:-192.168.100.99}:8000"
+export PRINTER_BACKEND="http://${BACKEND_HOST:-192.168.100.99}:${BACKEND_PORT:-8000}"
 curl -i "$PRINTER_BACKEND/health"
 curl -s "$PRINTER_BACKEND/status"
 curl -s "$PRINTER_BACKEND/options"
 ```
 
 The default compose setup mounts the host CUPS socket at
-`/run/cups/cups.sock`, exposes `${BACKEND_HOST:-192.168.100.99}:8000:8000`,
+`/run/cups/cups.sock`, exposes `${BACKEND_HOST:-192.168.100.99}:${BACKEND_PORT:-8000}:8000`,
 persists upload/preview files in a Docker volume at `/var/tmp/printer-backend`,
 and persists SQLite data in a Docker volume at
 `/var/lib/local-printer-api/app.db` inside the container. Override `BACKEND_HOST`
-when testing on a different host IP, for example
+when testing on a different host IP, or `BACKEND_PORT` for a different published
+port. For example, use
 `BACKEND_HOST=127.0.0.1 docker compose up -d --build` for local-only review.
 
 Browser frontends must be listed in `CORS_ALLOWED_ORIGINS`. The default Docker
@@ -313,7 +314,7 @@ Verbose mode:
 python -m pytest -v
 ```
 
-Check shell scripts:
+Check shell script syntax:
 
 ```bash
 bash -n scripts/*.sh
@@ -329,6 +330,13 @@ make docker-build
 make compose-up
 make healthcheck
 ```
+
+`make shellcheck` runs [ShellCheck](https://www.shellcheck.net/) on the scripts;
+install it separately (for example, `apt install shellcheck` on Ubuntu). The
+`healthcheck` target uses the Compose LAN address by default. For another
+published address or port, run
+`make healthcheck BACKEND_HOST=127.0.0.1 BACKEND_PORT=8080`;
+`HEALTH_URL` overrides the complete URL.
 
 Recommended full validation:
 
