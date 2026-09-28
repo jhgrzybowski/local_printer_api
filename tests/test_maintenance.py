@@ -6,13 +6,13 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from app.main import app, get_cups_client
+from app.main import app, get_cups_client, get_file_storage
 from app.services.cups_client import CupsClientError
-from app.services.database import Database
+from app.services.database import Database, JobClaim
 from app.services.file_storage import StoredFile, TempFileStorage
 from app.services.maintenance import maybe_run_maintenance
 from tests.helpers import signup_user
-from tests.test_print_api import FakeCupsClient
+from tests.test_print_api import FakeCupsClient, make_pdf
 
 
 def old_upload(storage: TempFileStorage, file_id: str) -> None:
@@ -76,6 +76,54 @@ def test_cups_outage_defers_destructive_cleanup(tmp_path: Path, isolated_databas
     assert storage.file_path(file_id).exists()
     with isolated_database.connect() as connection:
         assert connection.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+
+
+def test_cleanup_during_history_insert_keeps_submitted_upload(
+    tmp_path: Path, isolated_database: Database, monkeypatch,
+) -> None:
+    storage = TempFileStorage(tmp_path / "storage")
+    cups = FakeCupsClient()
+    app.dependency_overrides[get_file_storage] = lambda: storage
+    app.dependency_overrides[get_cups_client] = lambda: cups
+    try:
+        with TestClient(app) as client:
+            signup_user(client)
+            upload = client.post(
+                "/files", files={"file": ("old.pdf", make_pdf(1), "application/pdf")},
+            )
+            file_id = upload.json()["file_id"]
+            old = time.time() - 100 * 86400
+            os.utime(storage.metadata_path(file_id), (old, old))
+            insert = isolated_database.insert_print_history
+
+            def cleanup_before_insert(*args, **kwargs):
+                # CUPS exposes the new job, but history has no mapping yet.
+                maybe_run_maintenance(isolated_database, storage, cups, force=True)
+                assert storage.file_path(file_id).exists()
+                return insert(*args, **kwargs)
+
+            monkeypatch.setattr(isolated_database, "insert_print_history", cleanup_before_insert)
+            response = client.post("/print", json={"file_id": file_id, "options": {}})
+            assert response.status_code == 200
+            assert response.json()["history_id"] is not None
+            assert storage.file_path(file_id).exists()
+            maybe_run_maintenance(isolated_database, storage, cups, force=True)
+            assert storage.file_path(file_id).exists()
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_fallback_claim_protects_source_upload(
+    tmp_path: Path, isolated_database: Database,
+) -> None:
+    storage = TempFileStorage(tmp_path / "storage")
+    file_id = "fallback-file-123456"
+    old_upload(storage, file_id)
+    claim = JobClaim(1, 123, "ipp://localhost/printers/Canon_MG5350", 1123, "urn:uuid:job-123")
+    isolated_database.save_fallback_job_claim(claim, file_id=file_id)
+    assert isolated_database.list_fallback_job_claims(1) == [claim]
+    maybe_run_maintenance(isolated_database, storage, FakeCupsClient(), force=True)
+    assert storage.file_path(file_id).exists()
 
 
 def test_history_is_paginated_per_user(isolated_database: Database) -> None:

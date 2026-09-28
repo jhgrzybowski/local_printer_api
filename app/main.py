@@ -223,9 +223,21 @@ def print_file(
 
     try:
         with storage.lease(record.file_id):
-            result = submit_print_job(client, storage, record, request.options)
+            return submit_and_record_print(request, current_user, client, storage, database, record)
     except (PrintRequestError, StorageError) as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
+def submit_and_record_print(
+    request: PrintRequest,
+    current_user: User,
+    client: CupsClient,
+    storage: TempFileStorage,
+    database: Database,
+    record: StoredFile,
+) -> dict[str, object]:
+    """Hold the source lease through job ownership persistence."""
+    result = submit_print_job(client, storage, record, request.options)
     submitted_job = None
     try:
         submitted_job = client.get_job(int(result["job_id"]))
@@ -261,7 +273,7 @@ def print_file(
         fallback_saved = False
         if job_claim is not None:
             try:
-                database.save_fallback_job_claim(job_claim)
+                database.save_fallback_job_claim(job_claim, file_id=record.file_id)
                 fallback_saved = True
             except Exception:
                 LOGGER.exception("Could not save fallback ownership for CUPS job %s", result["job_id"])

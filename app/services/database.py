@@ -342,6 +342,18 @@ class Database:
                     batch,
                 ).fetchall()
                 file_ids.update(str(row[0]) for row in rows)
+        # History writes can fail after CUPS accepts a job. The durable fallback
+        # claim also records its source so cleanup still protects that upload.
+        for path in (self.path.parent / "job-claims").glob("*.json"):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    continue
+                file_id = data.get("file_id")
+                if int(data["job_id"]) in job_ids and isinstance(file_id, str):
+                    file_ids.add(file_id)
+            except (OSError, ValueError, TypeError, KeyError):
+                continue
         return file_ids
 
     def prune_print_history(self, cutoff: str, active_job_ids: set[int]) -> int:
@@ -414,12 +426,12 @@ class Database:
         ]
         return claims + self.list_fallback_job_claims(user_id)
 
-    def save_fallback_job_claim(self, claim: JobClaim) -> None:
+    def save_fallback_job_claim(self, claim: JobClaim, file_id: str | None = None) -> None:
         """Save a small ownership record when the larger history write fails."""
         directory = self.path.parent / "job-claims"
         directory.mkdir(parents=True, exist_ok=True)
         target = directory / f"{claim.user_id}-{claim.job_id}.json"
-        payload = json.dumps(claim.__dict__, sort_keys=True)
+        payload = json.dumps({**claim.__dict__, "file_id": file_id}, sort_keys=True)
         fd, temporary = tempfile.mkstemp(dir=directory, prefix=".claim-")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as stream:
@@ -437,10 +449,13 @@ class Database:
         for path in directory.glob(f"{user_id}-*.json"):
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
-                claim = JobClaim(**data)
+                claim = JobClaim(
+                    data["user_id"], data["job_id"], data["printer_uri"],
+                    data["created_at"], data["job_uuid"],
+                )
                 if claim.user_id == user_id:
                     claims.append(claim)
-            except (OSError, ValueError, TypeError):
+            except (OSError, ValueError, TypeError, KeyError):
                 continue
         return claims
 
