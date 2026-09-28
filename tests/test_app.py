@@ -1,6 +1,7 @@
 from collections.abc import Iterator
 
 import pytest
+import yaml
 from fastapi.testclient import TestClient
 
 from app.main import app, get_cups_client
@@ -82,11 +83,21 @@ def test_openapi_yaml_is_served(client: TestClient) -> None:
     assert response.text.startswith("openapi: 3.1.0")
 
 
-def test_docs_uses_static_openapi_yaml(client: TestClient) -> None:
+def test_openapi_json_matches_canonical_yaml(client: TestClient) -> None:
+    yaml_response = client.get("/openapi.yaml")
+    json_response = client.get("/openapi.json")
+
+    assert json_response.status_code == 200
+    assert "application/json" in json_response.headers["content-type"]
+    assert json_response.json() == yaml.safe_load(yaml_response.text)
+    assert app.openapi() == json_response.json()
+
+
+def test_docs_uses_json_version_of_canonical_spec(client: TestClient) -> None:
     response = client.get("/docs")
 
     assert response.status_code == 200
-    assert "/openapi.yaml" in response.text
+    assert "url: '/openapi.json'" in response.text
 
 
 def test_status_uses_cups_client_dependency(client: TestClient) -> None:
