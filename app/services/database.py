@@ -120,6 +120,8 @@ class Database:
 
                 CREATE INDEX IF NOT EXISTS idx_print_history_user_created
                     ON print_history(user_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_print_history_created
+                    ON print_history(created_at);
                 """
             )
             # Serialize the read/check/ALTER sequence across worker processes.
@@ -345,7 +347,7 @@ class Database:
             )
             return int(cursor.lastrowid)
 
-    def list_print_history(self, user_id: int) -> list[dict[str, Any]]:
+    def list_print_history(self, user_id: int, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
         with self.connect() as connection:
             rows = connection.execute(
                 """
@@ -353,10 +355,85 @@ class Database:
                 FROM print_history
                 WHERE user_id = ?
                 ORDER BY created_at DESC, id DESC
+                LIMIT ? OFFSET ?
                 """,
-                (user_id,),
+                (user_id, limit, offset),
             ).fetchall()
         return [history_from_row(row) for row in rows]
+
+    def count_print_history(self, user_id: int) -> int:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) FROM print_history WHERE user_id = ?", (user_id,)
+            ).fetchone()
+        return int(row[0])
+
+    def file_ids_for_jobs(self, job_ids: set[int]) -> set[str]:
+        if not job_ids:
+            return set()
+        file_ids: set[str] = set()
+        with self.connect() as connection:
+            ids = list(job_ids)
+            for start in range(0, len(ids), 500):
+                batch = ids[start:start + 500]
+                placeholders = ",".join("?" for _ in batch)
+                rows = connection.execute(
+                    f"SELECT DISTINCT file_id FROM print_history WHERE cups_job_id IN ({placeholders})",
+                    batch,
+                ).fetchall()
+                file_ids.update(str(row[0]) for row in rows)
+        # History writes can fail after CUPS accepts a job. The durable fallback
+        # claim also records its source so cleanup still protects that upload.
+        for path in (self.path.parent / "job-claims" / self._database_id).glob("*.json"):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    continue
+                file_id = data.get("file_id")
+                user = self.get_user_by_id(int(data["user_id"]))
+                if (user is not None and data.get("user_identity_id") == user.identity_id
+                        and int(data["job_id"]) in job_ids and isinstance(file_id, str)):
+                    file_ids.add(file_id)
+            except (OSError, ValueError, TypeError, KeyError):
+                continue
+        return file_ids
+
+    def prune_print_history(self, cutoff: str, active_job_ids: set[int]) -> int:
+        """Expire old records, retaining any whose CUPS job is still active."""
+        with self.connect() as connection:
+            connection.execute("CREATE TEMP TABLE active_cleanup_jobs (job_id INTEGER PRIMARY KEY)")
+            connection.executemany(
+                "INSERT INTO active_cleanup_jobs (job_id) VALUES (?)",
+                ((job_id,) for job_id in active_job_ids),
+            )
+            cursor = connection.execute(
+                """DELETE FROM print_history
+                   WHERE created_at < ? AND NOT EXISTS (
+                     SELECT 1 FROM active_cleanup_jobs
+                     WHERE active_cleanup_jobs.job_id = print_history.cups_job_id
+                   )""",
+                (cutoff,),
+            )
+        return cursor.rowcount
+
+    def prune_fallback_job_claims(self, cutoff_timestamp: float, active_job_ids: set[int]) -> int:
+        """Expire fallback ownership records while CUPS still tracks active jobs."""
+        removed = 0
+        directory = self.path.parent / "job-claims" / self._database_id
+        for path in directory.glob("*.json"):
+            try:
+                if path.stat().st_mtime >= cutoff_timestamp:
+                    continue
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if int(data["job_id"]) in active_job_ids:
+                    continue
+                path.unlink()
+                removed += 1
+            except (OSError, ValueError, TypeError, KeyError):
+                # A malformed claim cannot authorize access, but leave it for
+                # manual inspection instead of deleting uncertain state.
+                continue
+        return removed
 
     def get_print_history(self, user_id: int, history_id: int) -> dict[str, Any] | None:
         with self.connect() as connection:
@@ -426,6 +503,19 @@ class Database:
             self.update_print_history_status_for_claim(claim, "forgotten")
             path.unlink(missing_ok=True)
 
+    def recover_all_forgotten_job_markers(self) -> None:
+        """Apply durable purge markers before history retention removes their rows."""
+        directory = self.path.parent / "history-purges" / self._database_id
+        for path in directory.glob("*.json"):
+            try:
+                claim = JobClaim(**json.loads(path.read_text(encoding="utf-8")))
+            except (OSError, ValueError, TypeError):
+                continue
+            if path != self.forgotten_job_marker_path(claim):
+                continue
+            self.update_print_history_status_for_claim(claim, "forgotten")
+            path.unlink(missing_ok=True)
+
     def list_job_claims(self, user_id: int) -> list[JobClaim]:
         with self.connect() as connection:
             rows = connection.execute(
@@ -445,14 +535,19 @@ class Database:
         ]
         return claims + self.list_fallback_job_claims(user_id)
 
-    def save_fallback_job_claim(self, claim: JobClaim, user_identity_id: str) -> None:
+    def save_fallback_job_claim(
+        self, claim: JobClaim, user_identity_id: str, file_id: str | None = None,
+    ) -> None:
         """Save a small ownership record when the larger history write fails."""
         # The ID was loaded at initialization, so this write still works when a
         # transient SQLite lock caused the history insert to fail.
         directory = self.path.parent / "job-claims" / self._database_id
         directory.mkdir(parents=True, exist_ok=True)
         target = directory / f"{claim.user_id}-{claim.job_id}.json"
-        payload = json.dumps({**claim.__dict__, "user_identity_id": user_identity_id}, sort_keys=True)
+        payload = json.dumps(
+            {**claim.__dict__, "user_identity_id": user_identity_id, "file_id": file_id},
+            sort_keys=True,
+        )
         fd, temporary = tempfile.mkstemp(dir=directory, prefix=".claim-")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as stream:
@@ -473,8 +568,11 @@ class Database:
         for path in directory.glob(f"{user_id}-*.json"):
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
-                identity_id = data.pop("user_identity_id")
-                claim = JobClaim(**data)
+                identity_id = data.get("user_identity_id")
+                claim = JobClaim(
+                    data["user_id"], data["job_id"], data["printer_uri"],
+                    data["created_at"], data["job_uuid"],
+                )
                 if claim.user_id == user_id and identity_id == user.identity_id:
                     claims.append(claim)
             except (OSError, ValueError, TypeError, KeyError):

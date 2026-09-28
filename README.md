@@ -320,7 +320,24 @@ curl -b cookies.txt -s -X PUT "$PRINTER_BACKEND/me/preferences" \
 
 curl -b cookies.txt -s "$PRINTER_BACKEND/me/preferences" | jq
 curl -b cookies.txt -s "$PRINTER_BACKEND/history" | jq
+curl -b cookies.txt -s "$PRINTER_BACKEND/history?limit=50&offset=50" | jq
 ```
+
+`GET /history` returns at most 50 newest entries by default (`limit` 1–100,
+`offset` starts at 0), plus `total`, `limit`, and `offset` fields. Each page
+refreshes only its returned nonterminal entries from CUPS.
+
+Storage maintenance runs once an hour in the API process. `UPLOAD_TTL_DAYS`
+defaults to 7 and removes an upload with its metadata, previews, and filtered
+PDFs after that age. `HISTORY_TTL_DAYS` defaults to 90 and removes older print
+history. Both settings must be positive integers. Expired sessions are also
+removed hourly and at startup. Active CUPS jobs protect their upload and
+history until they finish; files currently being rendered or spooled are held
+by a file lock. If CUPS cannot be queried, file and history cleanup waits for
+the next interval. CUPS keeps its own job records independently of this API's
+history retention. Once a completed job's history expires, this API also loses
+the ownership claim used to show or manage that CUPS job, even if CUPS still
+retains it. Increase `HISTORY_TTL_DAYS` if longer API access is needed.
 
 ### Jobs
 

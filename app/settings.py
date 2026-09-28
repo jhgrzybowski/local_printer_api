@@ -77,6 +77,10 @@ PREVIEW_DPI = _env_int("PREVIEW_DPI", 110)
 CORS_ALLOWED_ORIGINS = _env_csv("CORS_ALLOWED_ORIGINS", DEFAULT_CORS_ALLOWED_ORIGINS)
 SESSION_COOKIE_NAME = os.getenv("SESSION_COOKIE_NAME", "local_printer_session")
 SESSION_TTL_DAYS = _env_int("SESSION_TTL_DAYS", 30)
+UPLOAD_TTL_DAYS = _env_int("UPLOAD_TTL_DAYS", 7)
+HISTORY_TTL_DAYS = _env_int("HISTORY_TTL_DAYS", 90)
+if UPLOAD_TTL_DAYS < 1 or HISTORY_TTL_DAYS < 1:
+    raise ValueError("UPLOAD_TTL_DAYS and HISTORY_TTL_DAYS must be at least 1")
 SESSION_COOKIE_SECURE = os.getenv("SESSION_COOKIE_SECURE", "").strip().lower() in {
     "1",
     "true",

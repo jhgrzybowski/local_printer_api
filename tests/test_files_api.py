@@ -100,6 +100,33 @@ def test_preview_endpoint_returns_expected_metadata(file_client: TestClient) -> 
     assert body["page_count"] == 1
     assert body["pages"][0]["page"] == 1
     assert body["pages"][0]["url"] == f"/files/{file_id}/preview/1"
+    page = file_client.get(f"/files/{file_id}/preview/1")
+    assert page.status_code == 200
+    assert page.content.startswith(b"\x89PNG")
+
+
+def test_pdf_preview_list_allows_pages_not_rendered_yet(
+    file_client: TestClient, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.preview import PreviewService
+
+    upload = file_client.post(
+        "/files", files={"file": ("two-pages.pdf", make_pdf(2), "application/pdf")},
+    )
+    assert upload.status_code == 200
+    file_id = upload.json()["file_id"]
+
+    def pending_paths(service: PreviewService, record: object) -> list[Path]:
+        preview_dir = service.storage.preview_dir(file_id)
+        return [preview_dir / "page-1.png", preview_dir / "page-2.png"]
+
+    monkeypatch.setattr(PreviewService, "ensure_previews", pending_paths)
+    response = file_client.get(f"/files/{file_id}/preview")
+    assert response.status_code == 200
+    assert response.json()["pages"] == [
+        {"page": 1, "url": f"/files/{file_id}/preview/1"},
+        {"page": 2, "url": f"/files/{file_id}/preview/2"},
+    ]
 
 
 def test_pdf_preview_renders_only_requested_page(

@@ -4,10 +4,13 @@ import json
 import os
 import re
 import secrets
+import shutil
 import stat
 import tempfile
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
+from typing import Iterator
 
 import fcntl
 
@@ -159,33 +162,35 @@ class TempFileStorage:
         # cannot both claim the same original inode for different users.
         with (self.metadata_dir / f"{file_id}.claim.lock").open("a+b") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
-            record = self.get_record(file_id)
-            if record is None or record.file_id != file_id:
-                raise LegacyClaimError("Upload metadata is invalid")
-            if record.owner_user_id is not None:
-                raise LegacyClaimError("Upload already has an owner")
-            if not self.file_path(file_id).is_file():
-                raise LegacyClaimError("Uploaded file not found")
-
-            claimed = replace(record, owner_user_id=owner_user_id)
-            temporary_path: Path | None = None
             try:
-                original_stat = path.stat()
-                with tempfile.NamedTemporaryFile(
-                    mode="w", encoding="utf-8", dir=self.metadata_dir,
-                    prefix=f".{file_id}.", suffix=".tmp", delete=False,
-                ) as temporary:
-                    temporary_path = Path(temporary.name)
-                    temporary.write(json.dumps(asdict(claimed), sort_keys=True))
-                    temporary.flush()
-                    os.fchmod(temporary.fileno(), stat.S_IMODE(original_stat.st_mode))
-                    os.fchown(temporary.fileno(), original_stat.st_uid, original_stat.st_gid)
-                    os.fsync(temporary.fileno())
-                os.replace(temporary_path, path)
-            finally:
-                if temporary_path is not None:
-                    temporary_path.unlink(missing_ok=True)
-            return claimed
+                with self.lease(file_id):
+                    record = self.get_record(file_id)
+                    if record is None or record.file_id != file_id:
+                        raise LegacyClaimError("Upload metadata is invalid")
+                    if record.owner_user_id is not None:
+                        raise LegacyClaimError("Upload already has an owner")
+
+                    claimed = replace(record, owner_user_id=owner_user_id)
+                    temporary_path: Path | None = None
+                    try:
+                        original_stat = path.stat()
+                        with tempfile.NamedTemporaryFile(
+                            mode="w", encoding="utf-8", dir=self.metadata_dir,
+                            prefix=f".{file_id}.", suffix=".tmp", delete=False,
+                        ) as temporary:
+                            temporary_path = Path(temporary.name)
+                            temporary.write(json.dumps(asdict(claimed), sort_keys=True))
+                            temporary.flush()
+                            os.fchmod(temporary.fileno(), stat.S_IMODE(original_stat.st_mode))
+                            os.fchown(temporary.fileno(), original_stat.st_uid, original_stat.st_gid)
+                            os.fsync(temporary.fileno())
+                        os.replace(temporary_path, path)
+                    finally:
+                        if temporary_path is not None:
+                            temporary_path.unlink(missing_ok=True)
+                    return claimed
+            except StorageError as exc:
+                raise LegacyClaimError("Upload or metadata not found") from exc
 
     def file_path(self, file_id: str) -> Path:
         return self.files_dir / file_id
@@ -199,6 +204,145 @@ class TempFileStorage:
     def filtered_pdf_path(self, file_id: str) -> Path:
         self.filtered_dir.mkdir(parents=True, exist_ok=True)
         return self.filtered_dir / f"{file_id}-{secrets.token_urlsafe(12)}.pdf"
+
+    @contextmanager
+    def maintenance_lock(self, *, exclusive: bool) -> Iterator[None]:
+        """Coordinate print submission with maintenance across API processes."""
+        self.root.mkdir(parents=True, exist_ok=True)
+        with (self.root / ".maintenance.lock").open("a+b") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
+
+    @contextmanager
+    def lease(self, file_id: str) -> Iterator[None]:
+        """Keep cleanup from removing an upload during rendering or spooling."""
+        if not is_safe_file_id(file_id):
+            raise StorageError("Stored file is missing", 404)
+        try:
+            source = self.file_path(file_id).open("rb")
+        except FileNotFoundError as exc:
+            raise StorageError("Stored file is missing", 404) from exc
+        with source:
+            fcntl.flock(source, fcntl.LOCK_SH)
+            try:
+                # Cleanup can unlink the pathname while this open descriptor
+                # waits for its lock. Only lease the inode still in storage.
+                try:
+                    current = self.file_path(file_id).stat()
+                except FileNotFoundError as exc:
+                    raise StorageError("Stored file is missing", 404) from exc
+                opened = os.fstat(source.fileno())
+                if ((opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)
+                        or not self.metadata_path(file_id).exists()):
+                    raise StorageError("Stored file is missing", 404)
+                yield
+            finally:
+                fcntl.flock(source, fcntl.LOCK_UN)
+
+    def prune_expired(self, cutoff_timestamp: float, protected_file_ids: set[str]) -> int:
+        """Remove expired upload groups, skipping files held by a worker."""
+        removed = 0
+        for metadata in self.metadata_dir.glob("*.json"):
+            file_id = metadata.stem
+            if not is_safe_file_id(file_id) or file_id in protected_file_ids:
+                continue
+            try:
+                if metadata.stat().st_mtime >= cutoff_timestamp:
+                    continue
+                try:
+                    source = self.file_path(file_id).open("rb")
+                except FileNotFoundError:
+                    # A lost payload cannot be leased or used for another
+                    # print. Remove its old metadata and derived artifacts.
+                    if (metadata.stat().st_mtime < cutoff_timestamp
+                            and not self.file_path(file_id).exists()):
+                        self._remove_upload_group(file_id, metadata)
+                        removed += 1
+                    continue
+                with source:
+                    try:
+                        fcntl.flock(source, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        continue
+                    # Recheck after taking the lock, since another worker may have touched it.
+                    if metadata.stat().st_mtime >= cutoff_timestamp:
+                        continue
+                    self._remove_upload_group(file_id, metadata)
+                    removed += 1
+            except (FileNotFoundError, OSError):
+                continue
+        # A crash can leave a payload or derived output without metadata.
+        for source_path in self.files_dir.glob("*"):
+            file_id = source_path.name
+            if (not is_safe_file_id(file_id) or file_id in protected_file_ids
+                    or self.metadata_path(file_id).exists()):
+                continue
+            try:
+                if source_path.stat().st_mtime >= cutoff_timestamp:
+                    continue
+                with source_path.open("rb") as source:
+                    try:
+                        fcntl.flock(source, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        continue
+                    if not self.metadata_path(file_id).exists():
+                        source_path.unlink(missing_ok=True)
+                        removed += 1
+            except (FileNotFoundError, OSError):
+                continue
+        for preview_dir in self.previews_dir.glob("*"):
+            file_id = preview_dir.name
+            if (not is_safe_file_id(file_id) or file_id in protected_file_ids
+                    or self.metadata_path(file_id).exists()):
+                continue
+            try:
+                if preview_dir.stat().st_mtime < cutoff_timestamp:
+                    shutil.rmtree(preview_dir)
+            except (FileNotFoundError, OSError):
+                continue
+        source_ids = sorted(
+            (path.name for path in self.files_dir.glob("*") if is_safe_file_id(path.name)),
+            key=len, reverse=True,
+        )
+        for filtered in self.filtered_dir.glob("*.pdf"):
+            file_id = next(
+                (candidate for candidate in source_ids
+                 if filtered.name == f"{candidate}.pdf"
+                 or filtered.name.startswith(f"{candidate}-")),
+                None,
+            )
+            if file_id in protected_file_ids:
+                continue
+            try:
+                if file_id is None:
+                    if filtered.stat().st_mtime < cutoff_timestamp:
+                        filtered.unlink()
+                    continue
+                with self.file_path(file_id).open("rb") as source:
+                    try:
+                        fcntl.flock(source, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        continue
+                    # A page-range print holds the source lease while writing
+                    # this PDF. Check its age and active-job mapping under lock.
+                    if filtered.stat().st_mtime < cutoff_timestamp:
+                        filtered.unlink()
+            except (FileNotFoundError, OSError):
+                continue
+        return removed
+
+    def _remove_upload_group(self, file_id: str, metadata: Path) -> None:
+        metadata.unlink(missing_ok=True)
+        self.file_path(file_id).unlink(missing_ok=True)
+        shutil.rmtree(self.preview_dir(file_id), ignore_errors=True)
+        for filtered in (
+            self.filtered_dir / f"{file_id}.pdf",
+            *self.filtered_dir.glob(f"{file_id}-*.pdf"),
+        ):
+            filtered.unlink(missing_ok=True)
 
     def _ensure_dirs(self) -> None:
         self.files_dir.mkdir(parents=True, exist_ok=True)

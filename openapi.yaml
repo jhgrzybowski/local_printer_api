@@ -526,10 +526,27 @@ paths:
       description: >-
         Refreshes nonterminal history from matching CUPS jobs and recovers saved
         purge markers. If CUPS is unavailable or a job disappears without a marker,
-        returns its last known status.
+        returns its last known status. Results are newest first and paginated;
+        old entries may expire under HISTORY_TTL_DAYS.
       operationId: listHistory
       security:
         - SessionCookieAuth: []
+      parameters:
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+          description: Maximum entries to return.
+        - in: query
+          name: offset
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+          description: Number of newest entries to skip.
       responses:
         "200":
           description: Print history list
@@ -1234,12 +1251,19 @@ components:
 
     HistoryListResponse:
       type: object
-      required: [history]
+      required: [history, total, limit, offset]
       properties:
         history:
           type: array
           items:
             $ref: "#/components/schemas/PrintHistoryEntry"
+        total:
+          type: integer
+          description: Total retained entries belonging to the current user.
+        limit:
+          type: integer
+        offset:
+          type: integer
 
     ErrorResponse:
       type: object
