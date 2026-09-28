@@ -6,6 +6,8 @@ SMOKE_USERNAME="${SMOKE_USERNAME:-smoke_user}"
 SMOKE_PASSWORD="${SMOKE_PASSWORD:-smokepass123}"
 DO_PRINT=0
 PDF_PATH=""
+GENERATED_PDF=0
+PREVIEW_PATH=""
 
 usage() {
   cat <<EOF
@@ -142,7 +144,8 @@ require_command curl
 require_command python3
 
 if [[ -z "$PDF_PATH" ]]; then
-  PDF_PATH="/tmp/canon-api-smoke.pdf"
+  PDF_PATH="$(mktemp /tmp/canon-api-smoke-XXXXXX.pdf)"
+  GENERATED_PDF=1
   make_pdf "$PDF_PATH"
 fi
 
@@ -152,7 +155,19 @@ if [[ ! -f "$PDF_PATH" ]]; then
 fi
 
 COOKIE_JAR="$(mktemp /tmp/smoke-cookie-XXXXXX.txt)"
-trap 'rm -f "$COOKIE_JAR"' EXIT
+cleanup() {
+  if [[ -s "$COOKIE_JAR" ]]; then
+    curl -4 -sS -o /dev/null -X POST "$PRINTER_BACKEND/auth/logout" -b "$COOKIE_JAR" || true
+  fi
+  rm -f "$COOKIE_JAR"
+  if [[ -n "$PREVIEW_PATH" ]]; then
+    rm -f "$PREVIEW_PATH"
+  fi
+  if [[ "$GENERATED_PDF" == "1" ]]; then
+    rm -f "$PDF_PATH"
+  fi
+}
+trap cleanup EXIT
 
 section "Backend"
 echo "PRINTER_BACKEND=$PRINTER_BACKEND"
@@ -164,7 +179,9 @@ request curl -4 -sS "$PRINTER_BACKEND/health"
 echo
 
 section "Status"
-request curl -4 -sS "$PRINTER_BACKEND/status"
+status_response="$(curl -4 -fsS "$PRINTER_BACKEND/status")"
+echo "$status_response"
+printf '%s' "$status_response" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["ready_for_print"] is True, f"printer is not ready: {d}"; print("Printer readiness confirmed")'
 echo
 
 section "Options"
@@ -203,6 +220,14 @@ echo "$upload_response"
 file_id="$(printf '%s' "$upload_response" | json_value "file_id")"
 echo "Uploaded file_id=$file_id"
 
+section "Preview"
+preview_response="$(curl -4 -fsS "$PRINTER_BACKEND/files/$file_id/preview" -b "$COOKIE_JAR")"
+echo "$preview_response"
+preview_url="$(printf '%s' "$preview_response" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["page_count"] == 1; print(d["pages"][0]["url"])')"
+PREVIEW_PATH="$(mktemp /tmp/canon-api-smoke-preview-XXXXXX.png)"
+curl -4 -fsS "$PRINTER_BACKEND$preview_url" -b "$COOKIE_JAR" -o "$PREVIEW_PATH"
+python3 -c 'from pathlib import Path; import sys; data=Path(sys.argv[1]).read_bytes(); assert data.startswith(b"\x89PNG\r\n\x1a\n"), "preview is not PNG"; print(f"Preview PNG bytes={len(data)}")' "$PREVIEW_PATH"
+
 if [[ "$DO_PRINT" != "1" ]]; then
   echo
   echo "Dry run complete. Pass --print to submit a real print job."
@@ -210,7 +235,7 @@ if [[ "$DO_PRINT" != "1" ]]; then
 fi
 
 section "Print"
-print_response="$(curl -4 -sS \
+print_response="$(curl -4 -fsS \
   -X POST "$PRINTER_BACKEND/print" \
   -b "$COOKIE_JAR" \
   -H "content-type: application/json" \
@@ -231,5 +256,10 @@ job_id="$(printf '%s' "$print_response" | json_value "job_id")"
 echo "Submitted job_id=$job_id"
 
 section "Job"
-request curl -4 -sS -b "$COOKIE_JAR" "$PRINTER_BACKEND/jobs/$job_id"
+request curl -4 -fsS -b "$COOKIE_JAR" "$PRINTER_BACKEND/jobs/$job_id"
 echo
+
+section "History"
+history_response="$(curl -4 -fsS -b "$COOKIE_JAR" "$PRINTER_BACKEND/history")"
+echo "$history_response"
+printf '%s' "$history_response" | python3 -c 'import json,sys; d=json.load(sys.stdin); jid=int(sys.argv[1]); assert any(item["cups_job_id"] == jid for item in d["history"]), "submitted job missing from user history"; print(f"Job {jid} is present in user history")' "$job_id"
