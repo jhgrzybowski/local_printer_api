@@ -808,10 +808,16 @@ components:
         supported:
           type: boolean
         choices:
+          description: Raw CUPS choices when raw_option is set; API choices when mapped choices use different CUPS options.
           type: array
           items:
             type: string
         mapping:
+          type: object
+          additionalProperties:
+            type: string
+        option_mapping:
+          description: CUPS option name selected for each API choice when choices use different backends.
           type: object
           additionalProperties:
             type: string

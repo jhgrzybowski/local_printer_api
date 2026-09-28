@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 
-from app.services.cups_client import CupsClient, CupsJobChangedError, normalize_job
+from app.services.cups_client import CupsClient, CupsClientError, CupsJobChangedError, normalize_job
 
 
 class RecordingConnection:
@@ -43,6 +43,49 @@ class RecordingConnection:
 class NotPossibleConnection(RecordingConnection):
     def cancelJob(self, job_id: int, purge_job: bool = False) -> None:
         raise RuntimeError("(1028, 'client-error-not-possible')")
+
+
+def test_capabilities_fail_when_queue_is_missing() -> None:
+    client = CupsClient("Canon_MG5350")
+
+    class Connection:
+        def getPrinters(self) -> dict[str, Any]:
+            return {}
+
+    client._connection = lambda: Connection()  # type: ignore[method-assign]
+    with pytest.raises(CupsClientError, match="does not exist"):
+        client.get_option_capabilities()
+
+
+def test_capabilities_fail_when_both_sources_fail() -> None:
+    client = CupsClient("Canon_MG5350")
+
+    class Connection:
+        def getPrinters(self) -> dict[str, Any]:
+            return {"Canon_MG5350": {}}
+
+    client._connection = lambda: Connection()  # type: ignore[method-assign]
+    client._get_lpoptions_capabilities = lambda: {}  # type: ignore[method-assign]
+    client._get_ppd_capabilities = lambda: {}  # type: ignore[method-assign]
+    with pytest.raises(CupsClientError, match="capability detection failed"):
+        client.get_option_capabilities()
+
+
+def test_capabilities_use_ppd_when_lpoptions_fails() -> None:
+    client = CupsClient("Canon_MG5350")
+
+    class Connection:
+        def getPrinters(self) -> dict[str, Any]:
+            return {"Canon_MG5350": {}}
+
+    client._connection = lambda: Connection()  # type: ignore[method-assign]
+
+    def unavailable_lpoptions() -> dict[str, set[str]]:
+        raise CupsClientError("lpoptions failed")
+
+    client._get_lpoptions_capabilities = unavailable_lpoptions  # type: ignore[method-assign]
+    client._get_ppd_capabilities = lambda: {"PageSize": {"A4"}}  # type: ignore[method-assign]
+    assert client.get_option_capabilities() == {"PageSize": {"A4"}}
 
 
 def test_list_jobs_maps_active_scope_to_not_completed() -> None:

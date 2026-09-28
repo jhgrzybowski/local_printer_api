@@ -64,10 +64,26 @@ class CupsClient:
         }
 
     def get_option_capabilities(self) -> dict[str, set[str]]:
-        lpoptions_capabilities = self._get_lpoptions_capabilities()
-        if lpoptions_capabilities:
-            return lpoptions_capabilities
-        return self._get_ppd_capabilities()
+        # lpoptions can fail for a missing queue without telling us whether CUPS
+        # itself is available. Check the queue before accepting either source.
+        try:
+            printers = self._connection().getPrinters()
+        except Exception as exc:
+            raise CupsClientError(f"CUPS queue query failed: {exc}") from exc
+        if self.queue_name not in printers:
+            raise CupsClientError(f"CUPS queue {self.queue_name} does not exist")
+
+        errors: list[str] = []
+        for source in (self._get_lpoptions_capabilities, self._get_ppd_capabilities):
+            try:
+                capabilities = source()
+            except CupsClientError as exc:
+                errors.append(str(exc))
+                continue
+            if capabilities:
+                return capabilities
+            errors.append(f"{source.__name__} returned no options")
+        raise CupsClientError("CUPS capability detection failed: " + "; ".join(errors))
 
     def _get_lpoptions_capabilities(self) -> dict[str, set[str]]:
         try:
@@ -78,11 +94,11 @@ class CupsClient:
                 text=True,
                 timeout=8,
             )
-        except (OSError, subprocess.TimeoutExpired):
-            return {}
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise CupsClientError(f"lpoptions failed: {exc}") from exc
 
         if completed.returncode != 0:
-            return {}
+            raise CupsClientError(f"lpoptions failed: {completed.stderr.strip() or completed.returncode}")
         return parse_lpoptions(completed.stdout)
 
     def _get_ppd_capabilities(self) -> dict[str, set[str]]:
@@ -90,8 +106,8 @@ class CupsClient:
             connection = self._connection()
             ppd_path = Path(connection.getPPD(self.queue_name))
             return parse_ppd_options(ppd_path.read_text(encoding="utf-8", errors="replace"))
-        except Exception:
-            return {}
+        except Exception as exc:
+            raise CupsClientError(f"CUPS PPD query failed: {exc}") from exc
 
     def print_file(self, path: Path, title: str, options: dict[str, str]) -> int:
         try:
