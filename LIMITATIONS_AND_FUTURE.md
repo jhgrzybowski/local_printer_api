@@ -23,7 +23,7 @@ The backend is intended to expose a clean REST API for a future LAN frontend.
 
 ## 2. LAN-only authentication
 
-Signup and login create local accounts and set an HttpOnly
+Signup creates a local account; signup and login set an HttpOnly
 `local_printer_session` cookie. Upload, preview, print, job, preference, and
 history endpoints require a valid session. Files, preferences, history, and API
 job views are scoped to the signed-in user. Health, printer status, options,
