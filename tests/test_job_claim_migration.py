@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import sqlite3
 from pathlib import Path
+from threading import Barrier
 
 from app.services.database import Database, JobClaim
 
@@ -62,3 +64,20 @@ def test_fallback_claims_are_bound_to_database_identity(tmp_path: Path) -> None:
     replacement = Database(path)
     assert replacement.database_id() != original_id
     assert replacement.list_fallback_job_claims(1) == []
+
+
+def test_concurrent_startup_serializes_identity_column_migration(tmp_path: Path) -> None:
+    path = tmp_path / "concurrent.db"
+    start = Barrier(8)
+
+    def initialize() -> str:
+        start.wait(timeout=5)
+        return Database(path).database_id()
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        identities = list(pool.map(lambda _: initialize(), range(8)))
+
+    assert len(set(identities)) == 1
+    with Database(path).connect() as connection:
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(print_history)")}
+    assert {"cups_printer_uri", "cups_created_at", "cups_job_uuid"} <= columns

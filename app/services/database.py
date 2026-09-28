@@ -119,6 +119,10 @@ class Database:
                     ON print_history(user_id, created_at DESC);
                 """
             )
+            # Serialize the read/check/ALTER sequence across worker processes.
+            # CREATE IF NOT EXISTS above is safe in autocommit mode, while the
+            # identity-column check must see the preceding writer's changes.
+            connection.execute("BEGIN IMMEDIATE")
             columns = {row["name"] for row in connection.execute("PRAGMA table_info(print_history)")}
             for name, definition in (
                 ("cups_printer_uri", "TEXT"),
