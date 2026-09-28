@@ -196,5 +196,27 @@ def test_summary_uses_the_option_selected_for_submission() -> None:
     assert PrintOptions(copies=2, collate=False).to_cups_options(capabilities).applied_options["Collate"] == "False"
 
 
+def test_quality_summary_lists_api_choices_when_raw_options_are_mixed() -> None:
+    capabilities = {
+        "print-quality": {"3"},
+        "Resolution": {"600dpi", "612x600dpi"},
+    }
+    quality = build_options_summary("Canon_MG5350", capabilities)["quality"]
+
+    assert quality["supported"] is True
+    assert quality["raw_option"] is None
+    assert quality["choices"] == ["draft", "normal", "high"]
+    assert quality["recommended_mapping"] == {
+        "draft": "3",
+        "normal": "600dpi",
+        "high": "612x600dpi",
+    }
+    assert quality["option_mapping"] == {
+        "draft": "print-quality",
+        "normal": "Resolution",
+        "high": "Resolution",
+    }
+
+
 def test_empty_capabilities_do_not_advertise_orientation() -> None:
     assert build_options_summary("Canon_MG5350", {})["orientation"]["supported"] is False

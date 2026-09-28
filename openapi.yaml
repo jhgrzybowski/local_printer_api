@@ -800,6 +800,7 @@ components:
         supported:
           type: boolean
         choices:
+          description: Raw CUPS choices when raw_option is set; API choices when mapped choices use different CUPS options.
           type: array
           items:
             type: string

@@ -79,12 +79,16 @@ def _quality_modes(capabilities: dict[str, set[str]]) -> dict[str, Any]:
     selected = {value: _mapped(capabilities, "quality", value) for value in ("draft", "normal", "high")}
     option_names = {result[0] for result in selected.values() if result is not None}
     raw_option = next(iter(option_names)) if len(option_names) == 1 else None
-    choices = capabilities.get(raw_option, set()) if raw_option else set()
+    choices = (
+        sorted(capabilities[raw_option])
+        if raw_option
+        else [value for value, result in selected.items() if result is not None]
+    )
     return {
         "api_name": "quality",
         "raw_option": raw_option,
         "supported": bool(option_names),
-        "choices": sorted(choices),
+        "choices": choices,
         "recommended_mapping": {value: result[1] if result else None for value, result in selected.items()},
         "option_mapping": {value: result[0] for value, result in selected.items() if result},
     }
