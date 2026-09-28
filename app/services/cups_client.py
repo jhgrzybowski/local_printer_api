@@ -13,6 +13,10 @@ class CupsClientError(RuntimeError):
     """Raised when CUPS cannot be reached or queried."""
 
 
+class CupsJobChangedError(CupsClientError):
+    """The numeric job ID no longer identifies the authorized CUPS job."""
+
+
 JOB_SCOPE_TO_CUPS = {
     "active": "not-completed",
     "completed": "completed",
@@ -112,8 +116,11 @@ class CupsClient:
         return {scope: len(self.list_jobs(scope)) for scope in JOB_SCOPE_TO_CUPS}
 
     def get_job(self, job_id: int) -> dict[str, Any] | None:
+        connection = self._connection()
+        return self._get_job_from_connection(connection, job_id)
+
+    def _get_job_from_connection(self, connection: Any, job_id: int) -> dict[str, Any] | None:
         try:
-            connection = self._connection()
             attrs = connection.getJobAttributes(job_id)
         except Exception as exc:
             message = str(exc).lower()
@@ -122,8 +129,12 @@ class CupsClient:
             raise CupsClientError(f"CUPS job query failed: {exc}") from exc
         return normalize_job(job_id, attrs)
 
-    def cancel_job(self, job_id: int) -> dict[str, Any]:
-        job = self.get_job(job_id)
+    def cancel_job(
+        self, job_id: int, expected_job: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        connection = self._connection()
+        job = self._get_job_from_connection(connection, job_id)
+        self._require_same_job(expected_job, job)
         if job is None:
             return {
                 "job_id": job_id,
@@ -136,7 +147,6 @@ class CupsClient:
             return cancel_not_possible_response(job)
 
         try:
-            connection = self._connection()
             connection.cancelJob(job_id)
         except Exception as exc:
             message = str(exc).lower()
@@ -168,8 +178,12 @@ class CupsClient:
             "message": "Job cancellation was submitted.",
         }
 
-    def forget_job(self, job_id: int) -> dict[str, Any]:
-        job = self.get_job(job_id)
+    def forget_job(
+        self, job_id: int, expected_job: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        connection = self._connection()
+        job = self._get_job_from_connection(connection, job_id)
+        self._require_same_job(expected_job, job)
         if job is None:
             return {
                 "job_id": job_id,
@@ -186,7 +200,6 @@ class CupsClient:
             }
 
         try:
-            connection = self._connection()
             connection.cancelJob(job_id, purge_job=True)
         except TypeError as exc:
             return {
@@ -212,6 +225,19 @@ class CupsClient:
             }
 
         return {"job_id": job_id, "forgotten": True, "method": "pycups-purge-job"}
+
+    @staticmethod
+    def _require_same_job(
+        expected_job: dict[str, Any] | None, current_job: dict[str, Any] | None,
+    ) -> None:
+        if expected_job is None:
+            return
+        identity_fields = ("job_id", "printer_uri", "created_at", "job_uuid")
+        if current_job is None or any(
+            expected_job.get(field) != current_job.get(field)
+            for field in identity_fields
+        ):
+            raise CupsJobChangedError("CUPS job identity changed before the action")
 
 
 JOB_STATE_LABELS = {

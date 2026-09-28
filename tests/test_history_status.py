@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Any
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -213,3 +216,59 @@ def test_successful_purge_recovers_after_transient_history_write_failure(
             assert not marker.exists()
     finally:
         app.dependency_overrides.clear()
+
+
+@pytest.mark.parametrize(
+    ("terminal_state", "expected_status"),
+    [(9, "completed"), (None, "submitted")],
+)
+def test_unsuccessful_cancel_uses_fresh_cups_state(
+    isolated_database: Database,
+    terminal_state: int | None,
+    expected_status: str,
+) -> None:
+    class ChangingCups(FakeCupsClient):
+        def cancel_job(
+            self, job_id: int, expected_job: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            if terminal_state is None:
+                self.jobs.pop(job_id)
+            else:
+                set_job_state(self, job_id, terminal_state)
+            return super().cancel_job(job_id, expected_job=expected_job)
+
+    cups = ChangingCups()
+    app.dependency_overrides[get_cups_client] = lambda: cups
+    try:
+        with TestClient(app) as client:
+            user_id = signup_user(client)["user"]["id"]
+            history_id = history_row(isolated_database, user_id, 123)
+
+            response = client.delete("/jobs/123")
+
+            assert response.status_code == 200
+            assert response.json()["cancelled"] is False
+            assert isolated_database.get_print_history(user_id, history_id)["status"] == expected_status
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_purge_marker_does_not_apply_to_replaced_database(tmp_path: Path) -> None:
+    path = tmp_path / "app.db"
+    old_database = Database(path)
+    old_user = old_database.create_user("old", None, "hash", "salt", 1)
+    history_row(old_database, old_user.id, 123)
+    claim = old_database.list_job_claims(old_user.id)[0]
+    old_database.save_forgotten_job_marker(claim)
+    marker = old_database.forgotten_job_marker_path(claim)
+    old_database_id = old_database.database_id()
+
+    path.unlink()
+    new_database = Database(path)
+    new_user = new_database.create_user("new", None, "hash", "salt", 1)
+    new_history_id = history_row(new_database, new_user.id, 123)
+    new_database.recover_forgotten_job_markers(new_user.id)
+
+    assert old_database_id != new_database.database_id()
+    assert marker.exists()
+    assert new_database.get_print_history(new_user.id, new_history_id)["status"] == "submitted"

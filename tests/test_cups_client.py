@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.services.cups_client import CupsClient, normalize_job
+import pytest
+
+from app.services.cups_client import CupsClient, CupsJobChangedError, normalize_job
 
 
 class RecordingConnection:
@@ -108,3 +110,33 @@ def test_forget_terminal_job_uses_pycups_purge_flag() -> None:
 
     assert response == {"job_id": 1, "forgotten": True, "method": "pycups-purge-job"}
     assert connection.cancelled == [(1, True)]
+
+
+@pytest.mark.parametrize("action, old_state, new_state", [
+    ("cancel_job", 5, 5),
+    ("forget_job", 9, 9),
+])
+def test_job_reuse_between_authorization_and_action_is_rejected(
+    action: str, old_state: int, new_state: int,
+) -> None:
+    old = {
+        "job-state": old_state,
+        "job-printer-uri": "ipp://localhost/printers/Canon_MG5350",
+        "time-at-creation": 1000,
+        "job-uuid": "urn:uuid:old",
+    }
+    connection = RecordingConnection({1: old})
+    client = CupsClient()
+    client._connection = lambda: connection  # type: ignore[method-assign]
+    authorized_job = client.get_job(1)
+    assert authorized_job is not None
+
+    connection.jobs[1] = {
+        **old,
+        "job-state": new_state,
+        "job-uuid": "urn:uuid:replacement",
+    }
+    with pytest.raises(CupsJobChangedError):
+        getattr(client, action)(1, expected_job=authorized_job)
+
+    assert connection.cancelled == []

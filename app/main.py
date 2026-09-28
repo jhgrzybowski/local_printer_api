@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
+import yaml
 from fastapi import (
     Body,
     Depends,
@@ -21,7 +22,12 @@ from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 
 from app.models.print_options import PrintRequest
-from app.services.cups_client import JOB_SCOPE_TO_CUPS, CupsClient, CupsClientError
+from app.services.cups_client import (
+    JOB_SCOPE_TO_CUPS,
+    CupsClient,
+    CupsClientError,
+    CupsJobChangedError,
+)
 from app.services.auth import AuthError, AuthService, LoginSession, public_user
 from app.services.database import Database, JobClaim, User
 from app.services.file_storage import StoredFile, StorageError, TempFileStorage
@@ -82,10 +88,20 @@ def openapi_yaml() -> FileResponse:
     return FileResponse(OPENAPI_YAML_PATH, media_type="application/yaml")
 
 
+def canonical_openapi() -> dict[str, Any]:
+    """Serve the maintained YAML spec through FastAPI's JSON OpenAPI route."""
+    if not OPENAPI_YAML_PATH.exists():
+        raise HTTPException(status_code=404, detail="openapi.yaml not found")
+    return yaml.safe_load(OPENAPI_YAML_PATH.read_text(encoding="utf-8"))
+
+
+app.openapi = canonical_openapi
+
+
 @app.get("/docs", include_in_schema=False)
 def swagger_docs() -> HTMLResponse:
     return get_swagger_ui_html(
-        openapi_url="/openapi.yaml",
+        openapi_url="/openapi.json",
         title="Local Printer API Docs",
     )
 
@@ -320,7 +336,9 @@ def cancel_job(
     try:
         job = client.get_job(job_id)
         require_user_cups_job(database, current_user, job, client.queue_name)
-        result = client.cancel_job(job_id)
+        result = client.cancel_job(job_id, expected_job=job)
+    except CupsJobChangedError as exc:
+        raise HTTPException(status_code=404, detail="Job not found") from exc
     except CupsClientError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     claim = claim_for_job(current_user.id, job, client.queue_name)
@@ -328,9 +346,15 @@ def cancel_job(
         if result.get("cancelled"):
             persist_history_status_after_action(database, claim, "cancel-requested")
         else:
-            state = history_cups_state(job)
-            if state is not None:
-                persist_history_status_after_action(database, claim, state)
+            try:
+                current_job = client.get_job(job_id)
+            except CupsClientError:
+                LOGGER.exception("Could not refresh CUPS job %s after cancellation attempt", job_id)
+            else:
+                if current_job is not None and claim_matches_job(claim, current_job, client.queue_name):
+                    state = history_cups_state(current_job)
+                    if state is not None:
+                        persist_history_status_after_action(database, claim, state)
     return result
 
 
@@ -344,7 +368,9 @@ def forget_job(
     try:
         job = client.get_job(job_id)
         require_user_cups_job(database, current_user, job, client.queue_name)
-        result = client.forget_job(job_id)
+        result = client.forget_job(job_id, expected_job=job)
+    except CupsJobChangedError as exc:
+        raise HTTPException(status_code=404, detail="Job not found") from exc
     except CupsClientError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
@@ -398,7 +424,7 @@ def list_previews(
             {
                 "page": index,
                 "url": f"/files/{record.file_id}/preview/{index}",
-                "size_bytes": path.stat().st_size,
+                **({"size_bytes": path.stat().st_size} if path.exists() else {}),
             }
             for index, path in enumerate(paths, start=1)
         ],
@@ -480,6 +506,8 @@ def get_user_file_record(
     current_user: User,
 ) -> StoredFile:
     record = storage.get_record(file_id)
+    # Legacy unowned uploads must be assigned by a local operator. Return the
+    # same 404 as an absent or other user's file to avoid disclosing file IDs.
     if record is None or record.owner_user_id != current_user.id:
         raise HTTPException(status_code=404, detail="File not found")
     return record

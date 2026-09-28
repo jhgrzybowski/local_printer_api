@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from app.services.database import Database
+from app.services.database import Database, JobClaim
 
 
 def test_existing_history_schema_gains_nullable_identity_columns(tmp_path: Path) -> None:
@@ -44,3 +44,21 @@ def test_existing_history_schema_gains_nullable_identity_columns(tmp_path: Path)
     assert old_row is not None
     assert old_row["cups_printer_uri"] is None
     assert database.list_job_claims(1) == []
+
+
+def test_fallback_claims_are_bound_to_database_identity(tmp_path: Path) -> None:
+    path = tmp_path / "app.db"
+    original = Database(path)
+    original_id = original.database_id()
+    claim = JobClaim(1, 321, "ipp://localhost/printers/Canon_MG5350", 1321, "job-uuid")
+    original.save_fallback_job_claim(claim)
+    assert Database(path).list_fallback_job_claims(1) == [claim]
+
+    # A different DB_PATH in the same directory must not inherit the claim.
+    assert Database(tmp_path / "other.db").list_fallback_job_claims(1) == []
+
+    # Recreating the original path also starts a fresh identity and user IDs.
+    path.unlink()
+    replacement = Database(path)
+    assert replacement.database_id() != original_id
+    assert replacement.list_fallback_job_claims(1) == []
