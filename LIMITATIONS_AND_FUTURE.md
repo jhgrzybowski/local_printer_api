@@ -8,15 +8,12 @@ This document tracks intentional v1 limitations and possible future improvements
 
 ## 1. Backend only
 
-The current project is backend-only.
+The current project is backend-only. The API already supports local user accounts,
+cookie sessions, per-user preferences, and SQLite print submission history.
 
 Not included in v1:
 
 - React frontend
-- authentication
-- user accounts
-- persistent job history
-- multi-user permissions
 - admin UI
 - cloud sync
 
@@ -24,13 +21,21 @@ The backend is intended to expose a clean REST API for a future LAN frontend.
 
 ---
 
-## 2. No authentication
+## 2. LAN-only authentication
 
-The service has no authentication in v1.
+Signup creates a local account; signup and login set an HttpOnly
+`local_printer_session` cookie. Upload, preview, print, job, preference, and
+history endpoints require a valid session. Files, preferences, history, and API
+job views are scoped to the signed-in user. Health, printer status, options,
+signup, and login are publicly reachable on the bound network.
 
-Implication:
+Security limits:
 
-- Anyone on the reachable network can potentially upload files, submit print jobs, inspect jobs, or cancel jobs.
+* Anyone who can reach the API can create an account; there is no signup approval
+  or administrator role.
+* The default plain-HTTP deployment does not encrypt credentials or cookies in
+  transit. Use only on a trusted LAN.
+* Authentication does not make the API safe to expose to the internet.
 
 Current recommendation:
 
@@ -39,13 +44,7 @@ Bind only to LAN.
 Do not expose to the internet.
 ```
 
-Future options:
-
-* simple LAN token,
-* basic auth,
-* reverse proxy auth,
-* IP allowlist,
-* local-only mode with frontend served on same host.
+For session setup and cookie checks, see `README.md` and `TROUBLESHOOTING.md`.
 
 ---
 
@@ -55,19 +54,21 @@ The backend intentionally delegates real print state to CUPS.
 
 Implication:
 
-* The backend does not maintain a persistent job database.
+* SQLite stores per-user print submission records, requested/applied options,
+  the CUPS job identity, and the last known job status. It does not replace
+  live CUPS state. Reading `/history` refreshes nonterminal statuses from
+  matching CUPS jobs; cancel and forget actions also update stored status.
+  If CUPS is unavailable, history keeps the last known status.
 * Completed historical jobs may remain visible or disappear depending on CUPS
   configuration.
 * Historical completed/canceled/aborted jobs are not active queue work and are
   not treated as cancelable tasks by the API.
 * Job status accuracy depends on CUPS and printer reporting.
 
-Future option:
+Future options:
 
-* SQLite job history for UX,
 * reprint support,
-* last-used settings,
-* audit log.
+* an audit log beyond the existing per-user submission history.
 
 ---
 
@@ -319,18 +320,27 @@ Uploads and previews are stored under `TMP_DIR`.
 
 Current limitations:
 
-* no long-term persistence,
-* no user separation,
-* no quota system beyond upload size limit,
-* cleanup policy may be simple.
+* uploads, metadata, previews, and filtered PDFs are local temporary files;
+  they are not retained as durable documents,
+* uploaded files have owner IDs and protected routes check ownership,
+* there is no storage quota beyond the per-upload size limit,
+* hourly in-process maintenance removes uploads, metadata, previews, and
+  filtered PDFs after `UPLOAD_TTL_DAYS` (7 by default), and print history
+  after `HISTORY_TTL_DAYS` (90 by default),
+* active CUPS jobs and files being rendered or spooled are protected from
+  cleanup. If CUPS cannot be queried, file and history cleanup is deferred.
+
+SQLite user, session, preference, and print history records are separate from
+these temporary files. Configure `DB_PATH` on persistent storage for deployment.
+`GET /history` is paginated (`limit` 1–100, default 50; `offset` starts at 0).
+When an expired history record is removed, its API job ownership claim is also
+lost, even if CUPS still retains the job.
 
 Future improvements:
 
-* TTL cleanup background task,
 * max total storage size,
-* per-file expiry,
-* manual cleanup endpoint for admin use,
-* SQLite metadata if needed.
+* per-user storage quota,
+* manual cleanup endpoint for admin use.
 
 ---
 
@@ -381,10 +391,6 @@ Recommended next steps:
    * clear unsupported indicators,
    * raw debug mode remains optional.
 
-6. Add cleanup policy:
-
-   * delete old uploads/previews after TTL.
-
 ---
 
 ## Medium-term
@@ -397,9 +403,7 @@ Potential improvements:
 * Print options sidebar.
 * Status banner.
 * Job list with cancel button.
-* LAN-only token authentication.
 * Better error UX.
-* Persistent local settings.
 
 ---
 
@@ -407,9 +411,8 @@ Potential improvements:
 
 Possible future directions:
 
-* SQLite job history.
 * Reprint previous job.
-* Save favorite print presets.
+* Named print presets beyond the current saved per-user preferences.
 * WebSocket or Server-Sent Events for live job/status updates.
 * Canon HTTP status scraping for ink/errors.
 * Multi-printer support.
