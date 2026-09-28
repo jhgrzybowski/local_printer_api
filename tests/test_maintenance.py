@@ -2,14 +2,18 @@ from __future__ import annotations
 
 import os
 import time
+import fcntl
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app, get_cups_client, get_file_storage
 from app.services.cups_client import CupsClientError
 from app.services.database import Database, JobClaim
-from app.services.file_storage import StoredFile, TempFileStorage
+from app.services.file_storage import StorageError, StoredFile, TempFileStorage
 from app.services.maintenance import maybe_run_maintenance
 from tests.helpers import signup_user
 from tests.test_print_api import FakeCupsClient, make_pdf
@@ -149,6 +153,37 @@ def test_cleanup_keeps_filtered_pdf_while_source_is_leased(tmp_path: Path) -> No
         filtered.write_bytes(b"%PDF fresh")
 
     assert filtered.read_bytes() == b"%PDF fresh"
+
+
+def test_lease_rejects_file_removed_while_waiting_for_cleanup_lock(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    storage = TempFileStorage(tmp_path / "storage")
+    file_id = "removed-while-waiting"
+    old_upload(storage, file_id)
+    attempted = Event()
+    original_flock = fcntl.flock
+
+    def signal_shared_lock(fd, operation):
+        if operation == fcntl.LOCK_SH:
+            attempted.set()
+        return original_flock(fd, operation)
+
+    def acquire_lease() -> None:
+        with storage.lease(file_id):
+            pass
+
+    with storage.file_path(file_id).open("rb") as cleanup_source:
+        original_flock(cleanup_source, fcntl.LOCK_EX)
+        monkeypatch.setattr(fcntl, "flock", signal_shared_lock)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(acquire_lease)
+            assert attempted.wait(timeout=5)
+            storage.metadata_path(file_id).unlink()
+            storage.file_path(file_id).unlink()
+            original_flock(cleanup_source, fcntl.LOCK_UN)
+            with pytest.raises(StorageError, match="Stored file is missing"):
+                future.result(timeout=5)
 
 
 def test_fallback_claim_protects_source_upload(

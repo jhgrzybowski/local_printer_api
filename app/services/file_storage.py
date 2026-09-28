@@ -215,6 +215,16 @@ class TempFileStorage:
         with source:
             fcntl.flock(source, fcntl.LOCK_SH)
             try:
+                # Cleanup can unlink the pathname while this open descriptor
+                # waits for its lock. Only lease the inode still in storage.
+                try:
+                    current = self.file_path(file_id).stat()
+                except FileNotFoundError as exc:
+                    raise StorageError("Stored file is missing", 404) from exc
+                opened = os.fstat(source.fileno())
+                if ((opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)
+                        or not self.metadata_path(file_id).exists()):
+                    raise StorageError("Stored file is missing", 404)
                 yield
             finally:
                 fcntl.flock(source, fcntl.LOCK_UN)
