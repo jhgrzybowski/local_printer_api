@@ -239,6 +239,18 @@ def test_job_without_uuid_cannot_be_managed_from_durable_claim(
     assert all(job["job_id"] != 123 for job in client.get("/jobs").json()["jobs"])
 
 
+def test_print_without_cups_uuid_warns_management_is_unavailable(client: TestClient) -> None:
+    cups = FakeCupsClient()
+    cups.jobs[123]["job_uuid"] = None
+    app.dependency_overrides[get_cups_client] = lambda: cups
+    file_id = upload_pdf(client)
+
+    response = client.post("/print", json={"file_id": file_id, "options": {}})
+
+    assert response.status_code == 200
+    assert any("job management is unavailable" in warning for warning in response.json()["warnings"])
+
+
 def test_print_pdf_with_mocked_cups(client: TestClient) -> None:
     file_id = upload_pdf(client, 3)
 

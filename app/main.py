@@ -502,8 +502,10 @@ def claim_for_job(user_id: int, job: dict[str, Any] | None, queue_name: str) -> 
     if isinstance(created_at, bool) or created <= 0:
         return None
     uuid = job.get("job_uuid")
+    if not uuid:
+        return None
     return JobClaim(user_id, int(job["job_id"]), printer_uri, created,
-                    str(uuid) if uuid else None)
+                    str(uuid))
 
 
 def claim_matches_job(claim: JobClaim, job: dict[str, Any], queue_name: str) -> bool:
