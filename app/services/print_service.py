@@ -89,7 +89,10 @@ def submit_print_job(
 ) -> dict[str, object]:
     ensure_printer_ready(client)
     prepared = prepare_print_file(storage, record, options)
-    capabilities = client.get_option_capabilities()
+    try:
+        capabilities = client.get_option_capabilities()
+    except CupsClientError as exc:
+        raise PrintRequestError(str(exc), 503) from exc
     mapped = options.to_cups_options(capabilities)
     title = _safe_title(prepared.title)
 
