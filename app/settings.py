@@ -43,11 +43,11 @@ DEFAULT_CORS_ALLOWED_ORIGINS = (
     # NOTE: localhost/127.0.0.1 origins are intentionally omitted.
     # The session cookie uses SameSite=Lax; on plain HTTP a browser treats
     # localhost:5173 → 192.168.100.99:8000 as cross-site and will not attach
-    # the cookie to XHR/fetch requests.  CORS preflight succeeds but every
-    # auth-protected endpoint returns 401.  Developers must access the Vite
-    # dev server via the LAN IP (e.g. http://192.168.100.99:5173) so that
-    # both the frontend and the API share the same registered host and the
-    # cookie is sent same-site.  See ENVIRONMENT.md for details.
+    # the cookie to XHR/fetch requests. Even if localhost is explicitly
+    # allowlisted for CORS, auth-protected endpoints return 401. Developers
+    # must access the Vite dev server via the LAN IP
+    # (e.g. http://192.168.100.99:5173) so the frontend and API share a host
+    # and the cookie is sent same-site. See ENVIRONMENT.md for details.
 )
 
 
