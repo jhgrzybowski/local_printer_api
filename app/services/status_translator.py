@@ -38,6 +38,7 @@ def translate_queue_status(snapshot: Mapping[str, Any]) -> dict[str, Any]:
             "state_code": None,
             "accepting_jobs": None,
             "enabled": False,
+            "ready_for_print": False,
             "message": "",
             "device_uri": None,
             "location": None,
@@ -63,6 +64,9 @@ def translate_queue_status(snapshot: Mapping[str, Any]) -> dict[str, Any]:
         "state_code": state_code,
         "accepting_jobs": accepting_jobs,
         "enabled": state_code != 5 if state_code is not None else None,
+        "ready_for_print": (
+            state in {"idle", "processing"} and accepting_jobs is True
+        ),
         "message": str(attributes.get("printer-state-message") or ""),
         "device_uri": attributes.get("device-uri"),
         "location": attributes.get("printer-location"),
@@ -81,6 +85,7 @@ def translate_error_status(queue_name: str, error: str) -> dict[str, Any]:
         "state_code": None,
         "accepting_jobs": None,
         "enabled": None,
+        "ready_for_print": False,
         "message": error,
         "device_uri": None,
         "location": None,
