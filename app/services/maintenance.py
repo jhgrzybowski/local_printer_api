@@ -31,26 +31,23 @@ def maybe_run_maintenance(
 
     try:
         database.delete_expired_sessions()
-        # Without an active-job snapshot, deleting source files or claims is unsafe.
-        active_jobs = client.list_jobs("active")
-        active_ids = {int(job["job_id"]) for job in active_jobs}
-        protected_files = database.file_ids_for_jobs(active_ids)
-        def is_protected_now(file_id: str) -> bool:
-            # Called with the source's exclusive lock held. A print cannot
-            # start until this check and any deletion have completed.
-            current_ids = {int(job["job_id"]) for job in client.list_jobs("active")}
-            return file_id in database.file_ids_for_jobs(current_ids)
-        cutoff = datetime.now(timezone.utc) - timedelta(days=UPLOAD_TTL_DAYS)
-        storage.prune_expired(cutoff.timestamp(), protected_files, is_protected_now)
-        history_cutoff = (
-            datetime.now(timezone.utc) - timedelta(days=HISTORY_TTL_DAYS)
-        ).replace(microsecond=0).isoformat()
-        database.recover_all_forgotten_job_markers()
-        database.prune_print_history(history_cutoff, active_ids)
-        database.prune_fallback_job_claims(
-            (datetime.now(timezone.utc) - timedelta(days=HISTORY_TTL_DAYS)).timestamp(),
-            active_ids,
-        )
+        # Hold one cross-process lock from the CUPS snapshot through cleanup.
+        # A new API print cannot publish its job mapping between those steps.
+        with storage.maintenance_lock(exclusive=True):
+            active_jobs = client.list_jobs("active")
+            active_ids = {int(job["job_id"]) for job in active_jobs}
+            protected_files = database.file_ids_for_jobs(active_ids)
+            cutoff = datetime.now(timezone.utc) - timedelta(days=UPLOAD_TTL_DAYS)
+            storage.prune_expired(cutoff.timestamp(), protected_files)
+            history_cutoff = (
+                datetime.now(timezone.utc) - timedelta(days=HISTORY_TTL_DAYS)
+            ).replace(microsecond=0).isoformat()
+            database.recover_all_forgotten_job_markers()
+            database.prune_print_history(history_cutoff, active_ids)
+            database.prune_fallback_job_claims(
+                (datetime.now(timezone.utc) - timedelta(days=HISTORY_TTL_DAYS)).timestamp(),
+                active_ids,
+            )
     except CupsClientError as exc:
         LOGGER.warning("CUPS unavailable; deferred file and history cleanup: %s", exc)
     except Exception:

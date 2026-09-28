@@ -90,7 +90,7 @@ def test_cleanup_during_history_insert_keeps_submitted_upload(
     app.dependency_overrides[get_file_storage] = lambda: storage
     app.dependency_overrides[get_cups_client] = lambda: cups
     try:
-        with TestClient(app) as client:
+        with ThreadPoolExecutor(max_workers=1) as pool, TestClient(app) as client:
             signup_user(client)
             upload = client.post(
                 "/files", files={"file": ("old.pdf", make_pdf(1), "application/pdf")},
@@ -99,10 +99,11 @@ def test_cleanup_during_history_insert_keeps_submitted_upload(
             old = time.time() - 100 * 86400
             os.utime(storage.metadata_path(file_id), (old, old))
             insert = isolated_database.insert_print_history
+            pending = []
 
             def cleanup_before_insert(*args, **kwargs):
-                # CUPS exposes the new job, but history has no mapping yet.
-                maybe_run_maintenance(isolated_database, storage, cups, force=True)
+                # Cleanup starts while /print holds the shared maintenance lock.
+                pending.append(pool.submit(maybe_run_maintenance, isolated_database, storage, cups, force=True))
                 assert storage.file_path(file_id).exists()
                 return insert(*args, **kwargs)
 
@@ -110,6 +111,7 @@ def test_cleanup_during_history_insert_keeps_submitted_upload(
             response = client.post("/print", json={"file_id": file_id, "options": {}})
             assert response.status_code == 200
             assert response.json()["history_id"] is not None
+            pending[0].result(timeout=5)
             assert storage.file_path(file_id).exists()
             maybe_run_maintenance(isolated_database, storage, cups, force=True)
             assert storage.file_path(file_id).exists()
@@ -117,23 +119,39 @@ def test_cleanup_during_history_insert_keeps_submitted_upload(
         app.dependency_overrides.clear()
 
 
-def test_cleanup_rechecks_job_mapping_after_initial_snapshot(
-    tmp_path: Path, isolated_database: Database, monkeypatch,
+def test_maintenance_waits_for_print_history_before_job_snapshot(
+    tmp_path: Path, isolated_database: Database,
 ) -> None:
     storage = TempFileStorage(tmp_path / "storage")
     file_id = "newly-printed-file"
     old_upload(storage, file_id)
     user = isolated_database.create_user("owner", None, "hash", "salt", 1)
-    original_prune = storage.prune_expired
+    submission_held = Event()
+    finish_submission = Event()
+    cleanup_started = Event()
 
-    def persist_print_before_prune(*args, **kwargs):
-        # The initial active-job snapshot saw no file mapping; /print then
-        # persisted one and released its lease before this cleanup pass.
-        add_history(isolated_database, user.id, file_id, 123)
-        return original_prune(*args, **kwargs)
+    def submit() -> None:
+        with storage.maintenance_lock(exclusive=False):
+            submission_held.set()
+            assert finish_submission.wait(timeout=5)
+            add_history(isolated_database, user.id, file_id, 123)
 
-    monkeypatch.setattr(storage, "prune_expired", persist_print_before_prune)
-    maybe_run_maintenance(isolated_database, storage, FakeCupsClient(), force=True)
+    def cleanup() -> None:
+        cleanup_started.set()
+        maybe_run_maintenance(isolated_database, storage, FakeCupsClient(), force=True)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        submitted = pool.submit(submit)
+        assert submission_held.wait(timeout=5)
+        cleaned = pool.submit(cleanup)
+        try:
+            assert cleanup_started.wait(timeout=5)
+            with pytest.raises(TimeoutError):
+                cleaned.result(timeout=0.1)
+        finally:
+            finish_submission.set()
+        submitted.result(timeout=5)
+        cleaned.result(timeout=5)
 
     assert storage.file_path(file_id).exists()
     assert storage.metadata_path(file_id).exists()

@@ -238,8 +238,9 @@ def print_file(
     record = get_user_file_record(storage, request.file_id, current_user)
 
     try:
-        with storage.lease(record.file_id):
-            return submit_and_record_print(request, current_user, client, storage, database, record)
+        with storage.maintenance_lock(exclusive=False):
+            with storage.lease(record.file_id):
+                return submit_and_record_print(request, current_user, client, storage, database, record)
     except (PrintRequestError, StorageError) as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 

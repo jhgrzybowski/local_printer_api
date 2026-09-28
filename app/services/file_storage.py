@@ -10,7 +10,7 @@ import tempfile
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Callable, Iterator
+from typing import Iterator
 
 import fcntl
 
@@ -206,6 +206,17 @@ class TempFileStorage:
         return self.filtered_dir / f"{file_id}-{secrets.token_urlsafe(12)}.pdf"
 
     @contextmanager
+    def maintenance_lock(self, *, exclusive: bool) -> Iterator[None]:
+        """Coordinate print submission with maintenance across API processes."""
+        self.root.mkdir(parents=True, exist_ok=True)
+        with (self.root / ".maintenance.lock").open("a+b") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
+
+    @contextmanager
     def lease(self, file_id: str) -> Iterator[None]:
         """Keep cleanup from removing an upload during rendering or spooling."""
         if not is_safe_file_id(file_id):
@@ -231,10 +242,7 @@ class TempFileStorage:
             finally:
                 fcntl.flock(source, fcntl.LOCK_UN)
 
-    def prune_expired(
-        self, cutoff_timestamp: float, protected_file_ids: set[str],
-        is_protected: Callable[[str], bool] | None = None,
-    ) -> int:
+    def prune_expired(self, cutoff_timestamp: float, protected_file_ids: set[str]) -> int:
         """Remove expired upload groups, skipping files held by a worker."""
         removed = 0
         for metadata in self.metadata_dir.glob("*.json"):
@@ -250,8 +258,7 @@ class TempFileStorage:
                     # A lost payload cannot be leased or used for another
                     # print. Remove its old metadata and derived artifacts.
                     if (metadata.stat().st_mtime < cutoff_timestamp
-                            and not self.file_path(file_id).exists()
-                            and (is_protected is None or not is_protected(file_id))):
+                            and not self.file_path(file_id).exists()):
                         self._remove_upload_group(file_id, metadata)
                         removed += 1
                     continue
@@ -262,8 +269,6 @@ class TempFileStorage:
                         continue
                     # Recheck after taking the lock, since another worker may have touched it.
                     if metadata.stat().st_mtime >= cutoff_timestamp:
-                        continue
-                    if is_protected is not None and is_protected(file_id):
                         continue
                     self._remove_upload_group(file_id, metadata)
                     removed += 1
@@ -283,8 +288,7 @@ class TempFileStorage:
                         fcntl.flock(source, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     except BlockingIOError:
                         continue
-                    if (not self.metadata_path(file_id).exists()
-                            and (is_protected is None or not is_protected(file_id))):
+                    if not self.metadata_path(file_id).exists():
                         source_path.unlink(missing_ok=True)
                         removed += 1
             except (FileNotFoundError, OSError):
@@ -324,8 +328,7 @@ class TempFileStorage:
                         continue
                     # A page-range print holds the source lease while writing
                     # this PDF. Check its age and active-job mapping under lock.
-                    if (filtered.stat().st_mtime < cutoff_timestamp
-                            and (is_protected is None or not is_protected(file_id))):
+                    if filtered.stat().st_mtime < cutoff_timestamp:
                         filtered.unlink()
             except (FileNotFoundError, OSError):
                 continue
