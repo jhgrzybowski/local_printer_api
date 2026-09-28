@@ -182,6 +182,11 @@ curl -s "$PRINTER_BACKEND/health" | jq
 curl -s "$PRINTER_BACKEND/status" | jq
 ```
 
+Use `ready_for_print` to decide whether to offer print submission. The
+`enabled` and `accepting_jobs` fields report CUPS queue facts and can remain
+true while the printer is offline. Readiness is checked again when submitting,
+so the printer can still become unavailable between the status and print calls.
+
 ### Printer options
 
 ```bash
