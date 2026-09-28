@@ -322,6 +322,20 @@ def test_print_reports_cups_unavailable(storage: TempFileStorage) -> None:
     assert response.json()["detail"] == "CUPS unavailable"
 
 
+def test_print_reports_capability_detection_failure(client: TestClient) -> None:
+    file_id = upload_pdf(client)
+
+    class CapabilityFailureClient(FakeCupsClient):
+        def get_option_capabilities(self) -> dict[str, set[str]]:
+            raise CupsClientError("CUPS capability detection failed")
+
+    app.dependency_overrides[get_cups_client] = lambda: CapabilityFailureClient()
+    response = client.post("/print", json={"file_id": file_id, "options": {}})
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "CUPS capability detection failed"
+
+
 def test_print_reports_queue_missing(storage: TempFileStorage) -> None:
     app.dependency_overrides.clear()
     app.dependency_overrides[get_file_storage] = lambda: storage
@@ -503,3 +517,14 @@ def test_options_endpoint_returns_detected_capabilities(client: TestClient) -> N
     assert response.json()["queue"] == "Canon_MG5350"
     assert response.json()["paper_sizes"]["choices"] == ["A4"]
     assert response.json()["duplex_modes"]["mapping"]["none"] == "None"
+
+
+def test_options_endpoint_reports_capability_failure(client: TestClient) -> None:
+    class FailingCupsClient(FakeCupsClient):
+        def get_option_capabilities(self) -> dict[str, set[str]]:
+            raise CupsClientError("CUPS capability detection failed")
+
+    app.dependency_overrides[get_cups_client] = lambda: FailingCupsClient()
+    response = client.get("/options")
+
+    assert response.status_code == 503

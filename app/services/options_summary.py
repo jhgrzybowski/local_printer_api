@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.models.print_options import PrintOptions
+
 
 def build_options_summary(
     queue_name: str,
@@ -16,7 +18,7 @@ def build_options_summary(
         "quality": _quality_modes(capabilities),
         "media_types": _media_types(capabilities),
         "collate": {
-            "supported": _has_any(capabilities, ("Collate", "collate")),
+            "supported": all(_mapped(capabilities, "collate", value) is not None for value in (True, False)),
             "raw_options": _present_names(capabilities, ("Collate", "collate")),
         },
         "fit_to_page": _fit_to_page(capabilities),
@@ -41,63 +43,54 @@ def _choice_block(api_name: str, values: tuple[str | None, list[str]]) -> dict[s
 
 
 def _duplex_modes(capabilities: dict[str, set[str]]) -> dict[str, Any]:
-    mapping = {
-        "none": "None",
-        "long-edge": "DuplexNoTumble",
-        "short-edge": "DuplexTumble",
+    selected = {
+        value: _mapped(capabilities, "duplex", value)
+        for value in ("none", "long-edge", "short-edge")
     }
-    supported = {
-        api_value: raw_value
-        for api_value, raw_value in mapping.items()
-        if _supports(capabilities, "Duplex", raw_value)
-    }
+    supported = {value: result[1] for value, result in selected.items() if result is not None}
+    option_mapping = {value: result[0] for value, result in selected.items() if result is not None}
+    option_names = set(option_mapping.values())
     return {
         "api_name": "duplex",
-        "raw_option": "Duplex" if "Duplex" in capabilities else None,
+        "raw_option": next(iter(option_names)) if len(option_names) == 1 else None,
         "supported": bool(supported),
         "choices": list(supported),
         "mapping": supported,
+        "option_mapping": option_mapping,
     }
 
 
 def _color_modes(capabilities: dict[str, set[str]]) -> dict[str, Any]:
-    choices = capabilities.get("ColorModel", set())
-    mapping: dict[str, str] = {}
-    for api_value, candidates in {
-        "monochrome": ("Gray", "Grey", "Black", "KGray"),
-        "color": ("RGB", "CMYK", "Color", "CMY"),
-    }.items():
-        for candidate in candidates:
-            if candidate in choices:
-                mapping[api_value] = candidate
-                break
+    selected = {value: _mapped(capabilities, "color_mode", value) for value in ("monochrome", "color", "auto")}
+    mapping = {value: result[1] for value, result in selected.items() if result is not None}
+    option_mapping = {value: result[0] for value, result in selected.items() if result is not None}
+    option_names = set(option_mapping.values())
     return {
         "api_name": "color_mode",
-        "raw_option": "ColorModel" if "ColorModel" in capabilities else None,
+        "raw_option": next(iter(option_names)) if len(option_names) == 1 else None,
         "supported": bool(mapping),
         "choices": list(mapping),
         "mapping": mapping,
+        "option_mapping": option_mapping,
     }
 
 
 def _quality_modes(capabilities: dict[str, set[str]]) -> dict[str, Any]:
-    raw_option = None
-    choices: set[str] = set()
-    for option_name in ("Resolution", "StpQuality", "Quality", "PrintQuality", "print-quality"):
-        if option_name in capabilities:
-            raw_option = option_name
-            choices = capabilities[option_name]
-            break
+    selected = {value: _mapped(capabilities, "quality", value) for value in ("draft", "normal", "high")}
+    option_names = {result[0] for result in selected.values() if result is not None}
+    raw_option = next(iter(option_names)) if len(option_names) == 1 else None
+    choices = (
+        sorted(capabilities[raw_option])
+        if raw_option
+        else [value for value, result in selected.items() if result is not None]
+    )
     return {
         "api_name": "quality",
         "raw_option": raw_option,
-        "supported": bool(raw_option and choices),
-        "choices": sorted(choices),
-        "recommended_mapping": {
-            "draft": _first_present(choices, ("300dpi", "Draft", "Fast", "3")),
-            "normal": _first_present(choices, ("600dpi", "601x600dpi", "Standard", "Normal", "4")),
-            "high": _first_present(choices, ("1200dpi", "High", "Best", "Photo", "5")),
-        },
+        "supported": bool(option_names),
+        "choices": choices,
+        "recommended_mapping": {value: result[1] if result else None for value, result in selected.items()},
+        "option_mapping": {value: result[0] for value, result in selected.items() if result},
     }
 
 
@@ -156,7 +149,7 @@ def _orientation_modes(capabilities: dict[str, set[str]]) -> dict[str, Any]:
         return {
             "api_name": "orientation",
             "raw_option": "StpOrientation",
-            "supported": True,
+            "supported": bool(capabilities["StpOrientation"]),
             "choices": [
                 api_value
                 for api_value, raw_value in raw_mapping.items()
@@ -167,8 +160,8 @@ def _orientation_modes(capabilities: dict[str, set[str]]) -> dict[str, Any]:
     return {
         "api_name": "orientation",
         "raw_option": "orientation-requested",
-        "supported": True,
-        "choices": list(mapping),
+        "supported": bool(capabilities),
+        "choices": list(mapping) if capabilities else [],
         "mapping": mapping,
     }
 
@@ -183,8 +176,16 @@ def _first_values(
     return None, []
 
 
-def _has_any(capabilities: dict[str, set[str]], names: tuple[str, ...]) -> bool:
-    return any(name in capabilities for name in names)
+def _mapped(capabilities: dict[str, set[str]], field: str, value: str | bool) -> tuple[str, str] | None:
+    if not capabilities:
+        return None
+    result = PrintOptions(copies=2, **{field: value}).to_cups_options(capabilities)
+    if field in result.unsupported_options:
+        return None
+    for name, option_value in result.applied_options.items():
+        if name != "copies":
+            return name, option_value
+    return None
 
 
 def _present_names(capabilities: dict[str, set[str]], names: tuple[str, ...]) -> list[str]:
