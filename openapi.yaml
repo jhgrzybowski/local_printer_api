@@ -523,6 +523,10 @@ paths:
     get:
       tags: [History]
       summary: List print history for the current user
+      description: >-
+        Refreshes nonterminal history from matching CUPS jobs and recovers saved
+        purge markers. If CUPS is unavailable or a job disappears without a marker,
+        returns its last known status.
       operationId: listHistory
       security:
         - SessionCookieAuth: []
@@ -540,6 +544,10 @@ paths:
     get:
       tags: [History]
       summary: Get one print history entry for the current user
+      description: >-
+        Refreshes nonterminal history from matching CUPS jobs and recovers saved
+        purge markers. If CUPS is unavailable or a job disappears without a marker,
+        returns its last known status.
       operationId: getHistoryEntry
       security:
         - SessionCookieAuth: []
@@ -1204,6 +1212,13 @@ components:
             type: string
         status:
           type: string
+          enum: [submitted, pending, pending-held, processing, processing-stopped, cancel-requested, canceled, aborted, completed, forgotten]
+          description: >-
+            Last verified CUPS state, or submitted before verification. A successful
+            cancel request sets cancel-requested until CUPS reports a terminal state.
+            Successful purge sets forgotten, including recovery from a saved purge
+            marker. If a job disappears from CUPS without a marker, the last known
+            state is retained.
           example: submitted
         created_at:
           type: string
@@ -1211,6 +1226,7 @@ components:
         updated_at:
           type: string
           format: date-time
+          description: Last time the saved status changed.
 
     HistoryListResponse:
       type: object

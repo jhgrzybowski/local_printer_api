@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -368,6 +369,62 @@ class Database:
                 (user_id, history_id),
             ).fetchone()
         return history_from_row(row) if row is not None else None
+
+    def update_print_history_status_for_claim(self, claim: JobClaim, status: str) -> None:
+        """Update only the history belonging to this exact CUPS job identity."""
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE print_history
+                SET status = ?, updated_at = ?
+                WHERE user_id = ? AND cups_job_id = ? AND cups_printer_uri = ?
+                  AND cups_created_at = ? AND cups_job_uuid IS ?
+                  AND status != ? AND (
+                    ? = 'forgotten' OR status NOT IN ('forgotten', 'canceled', 'aborted', 'completed')
+                  ) AND NOT (status = 'cancel-requested'
+                             AND ? IN ('pending', 'pending-held', 'processing', 'processing-stopped'))
+                """,
+                (
+                    status, datetime.now(timezone.utc).isoformat(timespec="microseconds"),
+                    claim.user_id, claim.job_id, claim.printer_uri, claim.created_at,
+                    claim.job_uuid, status, status, status,
+                ),
+            )
+
+    def forgotten_job_marker_path(self, claim: JobClaim) -> Path:
+        identity = json.dumps(claim.__dict__, sort_keys=True).encode("utf-8")
+        digest = hashlib.sha256(identity).hexdigest()
+        return self.path.parent / "history-purges" / self._database_id / f"{claim.user_id}-{digest}.json"
+
+    def save_forgotten_job_marker(self, claim: JobClaim) -> None:
+        """Keep successful purge intent when SQLite cannot record it yet."""
+        target = self.forgotten_job_marker_path(claim)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(dir=target.parent, prefix=".purge-")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                json.dump(claim.__dict__, stream, sort_keys=True)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, target)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+
+    def remove_forgotten_job_marker(self, claim: JobClaim) -> None:
+        self.forgotten_job_marker_path(claim).unlink(missing_ok=True)
+
+    def recover_forgotten_job_markers(self, user_id: int) -> None:
+        directory = self.path.parent / "history-purges" / self.database_id()
+        for path in directory.glob(f"{user_id}-*.json"):
+            try:
+                claim = JobClaim(**json.loads(path.read_text(encoding="utf-8")))
+            except (OSError, ValueError, TypeError):
+                continue
+            if claim.user_id != user_id or path != self.forgotten_job_marker_path(claim):
+                continue
+            self.update_print_history_status_for_claim(claim, "forgotten")
+            path.unlink(missing_ok=True)
 
     def list_job_claims(self, user_id: int) -> list[JobClaim]:
         with self.connect() as connection:

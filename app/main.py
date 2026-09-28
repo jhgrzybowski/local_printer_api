@@ -47,6 +47,11 @@ from app.settings import (
 
 OPENAPI_YAML_PATH = Path(__file__).resolve().parent.parent / "openapi.yaml"
 LOGGER = logging.getLogger(__name__)
+HISTORY_CUPS_STATES = frozenset({
+    "pending", "pending-held", "processing", "processing-stopped",
+    "canceled", "aborted", "completed",
+})
+HISTORY_TERMINAL_STATES = frozenset({"canceled", "aborted", "completed", "forgotten"})
 
 
 @asynccontextmanager
@@ -219,6 +224,7 @@ def print_file(
         result = submit_print_job(client, storage, record, request.options)
     except PrintRequestError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    submitted_job = None
     try:
         submitted_job = client.get_job(int(result["job_id"]))
         job_claim = claim_for_job(current_user.id, submitted_job, client.queue_name)
@@ -242,6 +248,7 @@ def print_file(
             applied_options=result["applied_options"],
             cups_job_id=int(result["job_id"]),
             warnings=[str(warning) for warning in result["warnings"]],
+            status=(history_cups_state(submitted_job) if job_claim else None) or "submitted",
             job_claim=job_claim,
         )
     except Exception:
@@ -329,11 +336,26 @@ def cancel_job(
     try:
         job = client.get_job(job_id)
         require_user_cups_job(database, current_user, job, client.queue_name)
-        return client.cancel_job(job_id, expected_job=job)
+        result = client.cancel_job(job_id, expected_job=job)
     except CupsJobChangedError as exc:
         raise HTTPException(status_code=404, detail="Job not found") from exc
     except CupsClientError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    claim = claim_for_job(current_user.id, job, client.queue_name)
+    if claim is not None:
+        if result.get("cancelled"):
+            persist_history_status_after_action(database, claim, "cancel-requested")
+        else:
+            try:
+                current_job = client.get_job(job_id)
+            except CupsClientError:
+                LOGGER.exception("Could not refresh CUPS job %s after cancellation attempt", job_id)
+            else:
+                if current_job is not None and claim_matches_job(claim, current_job, client.queue_name):
+                    state = history_cups_state(current_job)
+                    if state is not None:
+                        persist_history_status_after_action(database, claim, state)
+    return result
 
 
 @app.post("/jobs/{job_id}/forget")
@@ -354,6 +376,17 @@ def forget_job(
 
     if result.get("forgotten") is False:
         raise HTTPException(status_code=409, detail=result)
+    claim = claim_for_job(current_user.id, job, client.queue_name)
+    if claim is not None:
+        try:
+            database.save_forgotten_job_marker(claim)
+        except Exception:
+            LOGGER.exception("Failed to save purge marker for CUPS job %s", claim.job_id)
+        if persist_history_status_after_action(database, claim, "forgotten"):
+            try:
+                database.remove_forgotten_job_marker(claim)
+            except Exception:
+                LOGGER.exception("Failed to remove purge marker for CUPS job %s", claim.job_id)
     return result
 
 
@@ -438,8 +471,9 @@ def put_preferences(
 def list_history(
     current_user: User = Depends(require_current_user),
     database: Database = Depends(get_database),
+    client: CupsClient = Depends(get_cups_client),
 ) -> dict[str, object]:
-    return {"history": database.list_print_history(current_user.id)}
+    return {"history": refreshed_user_history(database, current_user, client)}
 
 
 @app.get("/history/{history_id}")
@@ -447,11 +481,12 @@ def get_history_entry(
     history_id: int,
     current_user: User = Depends(require_current_user),
     database: Database = Depends(get_database),
+    client: CupsClient = Depends(get_cups_client),
 ) -> dict[str, object]:
-    entry = database.get_print_history(current_user.id, history_id)
-    if entry is None:
+    entries = refreshed_user_history(database, current_user, client, history_id)
+    if not entries:
         raise HTTPException(status_code=404, detail="History entry not found")
-    return entry
+    return entries[0]
 
 
 def file_response(record: StoredFile) -> dict[str, object]:
@@ -532,6 +567,75 @@ def get_user_job_claims(database: Database, current_user: User) -> list[JobClaim
         except Exception:
             LOGGER.exception("Failed to read fallback job claims for user %s", current_user.id)
             return []
+
+
+def history_cups_state(job: dict[str, Any] | None) -> str | None:
+    state = job.get("state") if job is not None else None
+    return state if isinstance(state, str) and state in HISTORY_CUPS_STATES else None
+
+
+def persist_history_status_after_action(database: Database, claim: JobClaim, status: str) -> bool:
+    try:
+        database.update_print_history_status_for_claim(claim, status)
+    except Exception:
+        LOGGER.exception(
+            "Failed to persist print history status %s for CUPS job %s",
+            status, claim.job_id,
+        )
+        return False
+    return True
+
+
+def refreshed_user_history(
+    database: Database, current_user: User, client: CupsClient,
+    history_id: int | None = None,
+) -> list[dict[str, Any]]:
+    try:
+        database.recover_forgotten_job_markers(current_user.id)
+    except Exception:
+        LOGGER.exception("Failed to recover purge markers for user %s", current_user.id)
+    if history_id is None:
+        history = database.list_print_history(current_user.id)
+    else:
+        entry = database.get_print_history(current_user.id, history_id)
+        history = [entry] if entry is not None else []
+    pending_ids = {
+        row["cups_job_id"] for row in history
+        if row["status"] not in HISTORY_TERMINAL_STATES
+    }
+    if not pending_ids:
+        return history
+    claims = [
+        claim for claim in get_user_job_claims(database, current_user)
+        if claim.job_id in pending_ids
+    ]
+    if not claims:
+        return history
+    try:
+        jobs = {job["job_id"]: job for job in client.list_jobs("all")}
+    except CupsClientError as exc:
+        LOGGER.warning("Could not refresh print history from CUPS: %s", exc)
+        return history
+    changed = False
+    for claim in claims:
+        job = jobs.get(claim.job_id)
+        state = history_cups_state(job)
+        if job is not None and state is not None and claim_matches_job(claim, job, client.queue_name):
+            try:
+                database.update_print_history_status_for_claim(claim, state)
+            except Exception:
+                LOGGER.exception(
+                    "Failed to persist refreshed print history status %s for CUPS job %s",
+                    state, claim.job_id,
+                )
+            else:
+                changed = True
+    if not changed:
+        return history
+    if history_id is None:
+        return database.list_print_history(current_user.id)
+    refreshed = database.get_print_history(current_user.id, history_id)
+    return [refreshed] if refreshed is not None else []
 
 
 def require_user_cups_job(
