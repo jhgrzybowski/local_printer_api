@@ -217,6 +217,10 @@ export FILE_ID="replace-with-uploaded-file-id"
 
 ### Generate/read preview
 
+For PDFs, this endpoint lists all page URLs without rendering them. Each page is
+rendered and cached when its PNG URL is requested. A page's `size_bytes` appears
+in the metadata after that page has been rendered.
+
 ```bash
 curl -b cookies.txt -s "$PRINTER_BACKEND/files/$FILE_ID/preview" | jq
 ```

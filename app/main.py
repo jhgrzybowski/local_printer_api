@@ -351,7 +351,7 @@ def list_previews(
             {
                 "page": index,
                 "url": f"/files/{record.file_id}/preview/{index}",
-                "size_bytes": path.stat().st_size,
+                **({"size_bytes": path.stat().st_size} if path.exists() else {}),
             }
             for index, path in enumerate(paths, start=1)
         ],

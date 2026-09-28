@@ -888,7 +888,7 @@ components:
 
     PreviewPage:
       type: object
-      required: [page, url, size_bytes]
+      required: [page, url]
       properties:
         page:
           type: integer
@@ -899,6 +899,7 @@ components:
         size_bytes:
           type: integer
           minimum: 0
+          description: Present after the preview page has been rendered
 
     PreviewResponse:
       type: object
