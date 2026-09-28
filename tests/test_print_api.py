@@ -84,7 +84,10 @@ class FakeCupsClient:
     def get_job(self, job_id: int) -> dict[str, Any] | None:
         return self.jobs.get(job_id)
 
-    def cancel_job(self, job_id: int) -> dict[str, Any]:
+    def cancel_job(
+        self, job_id: int, expected_job: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        assert expected_job is not None and expected_job["job_id"] == job_id
         job = self.get_job(job_id)
         if job is None:
             return {
@@ -110,7 +113,10 @@ class FakeCupsClient:
             "message": "Job cancellation was submitted.",
         }
 
-    def forget_job(self, job_id: int) -> dict[str, Any]:
+    def forget_job(
+        self, job_id: int, expected_job: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        assert expected_job is not None and expected_job["job_id"] == job_id
         job = self.get_job(job_id)
         if job is None:
             return {

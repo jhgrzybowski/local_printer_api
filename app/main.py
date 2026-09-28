@@ -21,7 +21,12 @@ from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 
 from app.models.print_options import PrintRequest
-from app.services.cups_client import JOB_SCOPE_TO_CUPS, CupsClient, CupsClientError
+from app.services.cups_client import (
+    JOB_SCOPE_TO_CUPS,
+    CupsClient,
+    CupsClientError,
+    CupsJobChangedError,
+)
 from app.services.auth import AuthError, AuthService, LoginSession, public_user
 from app.services.database import Database, JobClaim, User
 from app.services.file_storage import StoredFile, StorageError, TempFileStorage
@@ -313,7 +318,9 @@ def cancel_job(
     try:
         job = client.get_job(job_id)
         require_user_cups_job(database, current_user, job, client.queue_name)
-        return client.cancel_job(job_id)
+        return client.cancel_job(job_id, expected_job=job)
+    except CupsJobChangedError as exc:
+        raise HTTPException(status_code=404, detail="Job not found") from exc
     except CupsClientError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
@@ -328,7 +335,9 @@ def forget_job(
     try:
         job = client.get_job(job_id)
         require_user_cups_job(database, current_user, job, client.queue_name)
-        result = client.forget_job(job_id)
+        result = client.forget_job(job_id, expected_job=job)
+    except CupsJobChangedError as exc:
+        raise HTTPException(status_code=404, detail="Job not found") from exc
     except CupsClientError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 

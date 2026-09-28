@@ -79,7 +79,10 @@ class FakeCupsClient:
     def get_job(self, job_id: int) -> dict[str, Any] | None:
         return next((job for job in self.list_jobs("all") if job["job_id"] == job_id), None)
 
-    def cancel_job(self, job_id: int) -> dict[str, Any]:
+    def cancel_job(
+        self, job_id: int, expected_job: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        assert expected_job is not None and expected_job["job_id"] == job_id
         self.actions.append(("cancel", job_id))
         return {
             "job_id": job_id,
@@ -89,7 +92,10 @@ class FakeCupsClient:
             "message": "Job cancellation was submitted.",
         }
 
-    def forget_job(self, job_id: int) -> dict[str, Any]:
+    def forget_job(
+        self, job_id: int, expected_job: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        assert expected_job is not None and expected_job["job_id"] == job_id
         self.actions.append(("forget", job_id))
         return {"job_id": job_id, "forgotten": True, "method": "pycups-purge-job"}
 
@@ -301,6 +307,39 @@ def test_failed_history_claim_survives_database_recreation(tmp_path: Path) -> No
 
     app.dependency_overrides.clear()
     assert after_restart.status_code == 200
+
+
+def test_old_fallback_claim_does_not_authorize_recreated_database_user(tmp_path: Path) -> None:
+    storage = TempFileStorage(tmp_path / "files", max_upload_mb=1)
+    database_path = tmp_path / "history.db"
+    failing_database = FailingHistoryDatabase(database_path)
+    cups_client = FakeCupsClient()
+    app.dependency_overrides.clear()
+    app.dependency_overrides[get_file_storage] = lambda: storage
+    app.dependency_overrides[get_cups_client] = lambda: cups_client
+    app.dependency_overrides[get_database] = lambda: failing_database
+
+    with TestClient(app) as client:
+        old_user_id = signup_user(client, username="old-user")["user"]["id"]
+        upload = client.post("/files", files={"file": ("x.pdf", make_pdf(), "application/pdf")})
+        assert client.post(
+            "/print", json={"file_id": upload.json()["file_id"], "options": {}}
+        ).status_code == 200
+
+        database_path.unlink()
+        app.dependency_overrides[get_database] = lambda: Database(database_path)
+        client.cookies.clear()
+        new_user_id = signup_user(client, username="new-user")["user"]["id"]
+        jobs = client.get("/jobs")
+        get_job = client.get("/jobs/321")
+        cancel = client.delete("/jobs/321")
+
+    app.dependency_overrides.clear()
+    assert new_user_id == old_user_id
+    assert jobs.json()["jobs"] == []
+    assert get_job.status_code == 404
+    assert cancel.status_code == 404
+    assert cups_client.actions == []
 
 
 def test_reused_job_id_and_other_queue_do_not_authorize_actions(tmp_path: Path) -> None:

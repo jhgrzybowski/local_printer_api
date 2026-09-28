@@ -4,6 +4,7 @@ import json
 import os
 import sqlite3
 import tempfile
+import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -39,6 +40,7 @@ class Database:
     def __init__(self, path: str | Path = DB_PATH) -> None:
         self.path = Path(path)
         self.migrate()
+        self._database_id = self.database_id()
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -91,6 +93,11 @@ class Database:
                     updated_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS app_metadata (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS print_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -120,6 +127,20 @@ class Database:
             ):
                 if name not in columns:
                     connection.execute(f"ALTER TABLE print_history ADD COLUMN {name} {definition}")
+            connection.execute(
+                "INSERT OR IGNORE INTO app_metadata (key, value) VALUES ('database_id', ?)",
+                (str(uuid.uuid4()),),
+            )
+
+    def database_id(self) -> str:
+        """Read the identity from the live database, not a cached path or inode."""
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT value FROM app_metadata WHERE key = 'database_id'"
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("Database identity is missing")
+        return str(uuid.UUID(str(row["value"])))
 
     def create_user(
         self,
@@ -351,7 +372,9 @@ class Database:
 
     def save_fallback_job_claim(self, claim: JobClaim) -> None:
         """Save a small ownership record when the larger history write fails."""
-        directory = self.path.parent / "job-claims"
+        # The ID was loaded at initialization, so this write still works when a
+        # transient SQLite lock caused the history insert to fail.
+        directory = self.path.parent / "job-claims" / self._database_id
         directory.mkdir(parents=True, exist_ok=True)
         target = directory / f"{claim.user_id}-{claim.job_id}.json"
         payload = json.dumps(claim.__dict__, sort_keys=True)
@@ -367,7 +390,7 @@ class Database:
                 os.unlink(temporary)
 
     def list_fallback_job_claims(self, user_id: int) -> list[JobClaim]:
-        directory = self.path.parent / "job-claims"
+        directory = self.path.parent / "job-claims" / self.database_id()
         claims = []
         for path in directory.glob(f"{user_id}-*.json"):
             try:
