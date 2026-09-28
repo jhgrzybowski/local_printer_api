@@ -157,7 +157,25 @@ class CupsClient:
             )
         except Exception as exc:
             raise CupsClientError(f"CUPS job query failed: {exc}") from exc
-        return [normalize_job(job_id, attrs) for job_id, attrs in jobs.items()]
+
+        normalized_jobs: list[dict[str, Any]] = []
+        for job_id, attrs in jobs.items():
+            job = normalize_job(job_id, attrs)
+            if not job["job_uuid"]:
+                try:
+                    detailed = self._get_job_from_connection(connection, int(job_id))
+                except CupsClientError as exc:
+                    LOGGER.warning("Could not load identity for CUPS job %s: %s", job_id, exc)
+                    detailed = None
+                if (
+                    detailed is not None
+                    and detailed["printer_uri"] == job["printer_uri"]
+                    and detailed["created_at"] == job["created_at"]
+                    and detailed["state_code"] == job["state_code"]
+                ):
+                    job = detailed
+            normalized_jobs.append(job)
+        return normalized_jobs
 
     def get_job(self, job_id: int) -> dict[str, Any] | None:
         connection = self._connection()

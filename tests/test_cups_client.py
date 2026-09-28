@@ -168,6 +168,43 @@ def test_list_jobs_maps_active_scope_to_not_completed() -> None:
     assert [job["job_id"] for job in jobs] == [1]
 
 
+def test_list_jobs_fetches_details_when_bulk_snapshot_omits_uuid() -> None:
+    snapshot = {
+        "job-name": "finished.pdf",
+        "job-state": 9,
+        "job-printer-uri": "ipp://localhost/printers/Canon_MG5350",
+        "time-at-creation": 1000,
+    }
+    detailed = {**snapshot, "job-uuid": "urn:uuid:job-21"}
+
+    class Connection:
+        detail_queries = 0
+
+        def getJobs(
+            self,
+            which_jobs: str = "not-completed",
+            requested_attributes: list[str] | None = None,
+        ) -> dict[int, dict[str, Any]]:
+            assert which_jobs == "all"
+            assert requested_attributes == ["all"]
+            return {21: snapshot}
+
+        def getJobAttributes(self, job_id: int) -> dict[str, Any]:
+            assert job_id == 21
+            self.detail_queries += 1
+            return detailed
+
+    connection = Connection()
+    client = CupsClient()
+    client._connection = lambda: connection  # type: ignore[method-assign]
+
+    jobs = client.list_jobs("all")
+
+    assert jobs[0]["job_uuid"] == "urn:uuid:job-21"
+    assert jobs[0]["state"] == "completed"
+    assert connection.detail_queries == 1
+
+
 def test_normalize_job_marks_active_and_terminal_states() -> None:
     active = normalize_job(1, {"job-state": 6})
     terminal = normalize_job(2, {"job-state": 9})
