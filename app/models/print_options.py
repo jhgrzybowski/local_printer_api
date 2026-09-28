@@ -346,6 +346,8 @@ class _OptionMapper:
         if value == "high" and option_name == "Resolution":
             resolutions: list[tuple[tuple[int, int], str]] = []
             for choice in choices:
+                if choice in preferred["normal"]:
+                    continue
                 match = re.fullmatch(r"(\d+)(?:x(\d+))?dpi", choice, re.IGNORECASE)
                 if match:
                     x_dpi = int(match.group(1))

@@ -138,6 +138,18 @@ def test_quality_maps_to_detected_resolution() -> None:
     assert PrintOptions(quality="high").to_cups_options(GUTENPRINT_CAPABILITIES).applied_options["Resolution"] == "612x600dpi"
 
 
+def test_normal_resolution_is_not_reused_for_high_quality() -> None:
+    for resolutions in ({"601x600dpi"}, {"600dpi", "601x600dpi"}):
+        capabilities = {"Resolution": resolutions}
+        normal = PrintOptions(quality="normal").to_cups_options(capabilities)
+        high = PrintOptions(quality="high").to_cups_options(capabilities)
+        summary = build_options_summary("Canon_MG5350", capabilities)["quality"]
+
+        assert "Resolution" in normal.applied_options
+        assert "quality" in high.unsupported_options
+        assert summary["recommended_mapping"]["high"] is None
+
+
 def test_media_type_aliases_and_drop_behavior() -> None:
     plain = PrintOptions(media_type="plain").to_cups_options(GUTENPRINT_CAPABILITIES)
     glossy = PrintOptions(media_type="glossy").to_cups_options(GUTENPRINT_CAPABILITIES)
