@@ -185,6 +185,33 @@ def test_old_fallback_claims_expire_except_active_jobs(
     assert isolated_database.list_fallback_job_claims(user.id) == [active]
 
 
+def test_maintenance_removes_purge_marker_with_expired_history(
+    tmp_path: Path, isolated_database: Database,
+) -> None:
+    storage = TempFileStorage(tmp_path / "storage")
+    user = isolated_database.create_user("owner", None, "hash", "salt", 1)
+    claim = JobClaim(user.id, 999, "ipp://localhost/printers/Canon_MG5350", 1999, "urn:uuid:job-999")
+    history_id = isolated_database.insert_print_history(
+        user_id=user.id, file_id="expired-history", original_filename="old.pdf",
+        detected_mime="application/pdf", size_bytes=4, page_count=1,
+        requested_options={}, applied_options={}, cups_job_id=999,
+        warnings=[], job_claim=claim,
+    )
+    with isolated_database.connect() as connection:
+        connection.execute(
+            "UPDATE print_history SET created_at = ? WHERE id = ?",
+            ("2020-01-01T00:00:00+00:00", history_id),
+        )
+    isolated_database.save_forgotten_job_marker(claim)
+    marker = isolated_database.forgotten_job_marker_path(claim)
+    assert marker.exists()
+
+    maybe_run_maintenance(isolated_database, storage, FakeCupsClient(), force=True)
+
+    assert isolated_database.get_print_history(user.id, history_id) is None
+    assert not marker.exists()
+
+
 def test_history_is_paginated_per_user(isolated_database: Database) -> None:
     cups = FakeCupsClient()
     app.dependency_overrides[get_cups_client] = lambda: cups

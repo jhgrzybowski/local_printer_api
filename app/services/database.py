@@ -503,6 +503,19 @@ class Database:
             self.update_print_history_status_for_claim(claim, "forgotten")
             path.unlink(missing_ok=True)
 
+    def recover_all_forgotten_job_markers(self) -> None:
+        """Apply durable purge markers before history retention removes their rows."""
+        directory = self.path.parent / "history-purges" / self._database_id
+        for path in directory.glob("*.json"):
+            try:
+                claim = JobClaim(**json.loads(path.read_text(encoding="utf-8")))
+            except (OSError, ValueError, TypeError):
+                continue
+            if path != self.forgotten_job_marker_path(claim):
+                continue
+            self.update_print_history_status_for_claim(claim, "forgotten")
+            path.unlink(missing_ok=True)
+
     def list_job_claims(self, user_id: int) -> list[JobClaim]:
         with self.connect() as connection:
             rows = connection.execute(
