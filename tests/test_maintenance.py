@@ -186,6 +186,19 @@ def test_lease_rejects_file_removed_while_waiting_for_cleanup_lock(
                 future.result(timeout=5)
 
 
+def test_cleanup_removes_expired_metadata_when_payload_is_missing(tmp_path: Path) -> None:
+    storage = TempFileStorage(tmp_path / "storage")
+    file_id = "missing-source-file"
+    old_upload(storage, file_id)
+    storage.file_path(file_id).unlink()
+
+    storage.prune_expired(time.time() - 7 * 86400, set())
+
+    assert not storage.metadata_path(file_id).exists()
+    assert not storage.preview_dir(file_id).exists()
+    assert list(storage.filtered_dir.glob(f"{file_id}-*.pdf")) == []
+
+
 def test_fallback_claim_protects_source_upload(
     tmp_path: Path, isolated_database: Database,
 ) -> None:

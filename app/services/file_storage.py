@@ -244,7 +244,18 @@ class TempFileStorage:
             try:
                 if metadata.stat().st_mtime >= cutoff_timestamp:
                     continue
-                with self.file_path(file_id).open("rb") as source:
+                try:
+                    source = self.file_path(file_id).open("rb")
+                except FileNotFoundError:
+                    # A lost payload cannot be leased or used for another
+                    # print. Remove its old metadata and derived artifacts.
+                    if (metadata.stat().st_mtime < cutoff_timestamp
+                            and not self.file_path(file_id).exists()
+                            and (is_protected is None or not is_protected(file_id))):
+                        self._remove_upload_group(file_id, metadata)
+                        removed += 1
+                    continue
+                with source:
                     try:
                         fcntl.flock(source, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     except BlockingIOError:
@@ -254,14 +265,7 @@ class TempFileStorage:
                         continue
                     if is_protected is not None and is_protected(file_id):
                         continue
-                    metadata.unlink(missing_ok=True)
-                    self.file_path(file_id).unlink(missing_ok=True)
-                    shutil.rmtree(self.preview_dir(file_id), ignore_errors=True)
-                    for filtered in (
-                        self.filtered_dir / f"{file_id}.pdf",
-                        *self.filtered_dir.glob(f"{file_id}-*.pdf"),
-                    ):
-                        filtered.unlink(missing_ok=True)
+                    self._remove_upload_group(file_id, metadata)
                     removed += 1
             except (FileNotFoundError, OSError):
                 continue
@@ -326,6 +330,16 @@ class TempFileStorage:
             except (FileNotFoundError, OSError):
                 continue
         return removed
+
+    def _remove_upload_group(self, file_id: str, metadata: Path) -> None:
+        metadata.unlink(missing_ok=True)
+        self.file_path(file_id).unlink(missing_ok=True)
+        shutil.rmtree(self.preview_dir(file_id), ignore_errors=True)
+        for filtered in (
+            self.filtered_dir / f"{file_id}.pdf",
+            *self.filtered_dir.glob(f"{file_id}-*.pdf"),
+        ):
+            filtered.unlink(missing_ok=True)
 
     def _ensure_dirs(self) -> None:
         self.files_dir.mkdir(parents=True, exist_ok=True)
