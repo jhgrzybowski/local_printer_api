@@ -113,6 +113,28 @@ def test_cleanup_during_history_insert_keeps_submitted_upload(
         app.dependency_overrides.clear()
 
 
+def test_cleanup_rechecks_job_mapping_after_initial_snapshot(
+    tmp_path: Path, isolated_database: Database, monkeypatch,
+) -> None:
+    storage = TempFileStorage(tmp_path / "storage")
+    file_id = "newly-printed-file"
+    old_upload(storage, file_id)
+    user = isolated_database.create_user("owner", None, "hash", "salt", 1)
+    original_prune = storage.prune_expired
+
+    def persist_print_before_prune(*args, **kwargs):
+        # The initial active-job snapshot saw no file mapping; /print then
+        # persisted one and released its lease before this cleanup pass.
+        add_history(isolated_database, user.id, file_id, 123)
+        return original_prune(*args, **kwargs)
+
+    monkeypatch.setattr(storage, "prune_expired", persist_print_before_prune)
+    maybe_run_maintenance(isolated_database, storage, FakeCupsClient(), force=True)
+
+    assert storage.file_path(file_id).exists()
+    assert storage.metadata_path(file_id).exists()
+
+
 def test_fallback_claim_protects_source_upload(
     tmp_path: Path, isolated_database: Database,
 ) -> None:

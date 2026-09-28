@@ -9,7 +9,7 @@ import shutil
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 
 from starlette.datastructures import UploadFile
 
@@ -156,7 +156,10 @@ class TempFileStorage:
             finally:
                 fcntl.flock(source, fcntl.LOCK_UN)
 
-    def prune_expired(self, cutoff_timestamp: float, protected_file_ids: set[str]) -> int:
+    def prune_expired(
+        self, cutoff_timestamp: float, protected_file_ids: set[str],
+        is_protected: Callable[[str], bool] | None = None,
+    ) -> int:
         """Remove expired upload groups, skipping files held by a worker."""
         removed = 0
         for metadata in self.metadata_dir.glob("*.json"):
@@ -173,6 +176,8 @@ class TempFileStorage:
                         continue
                     # Recheck after taking the lock, since another worker may have touched it.
                     if metadata.stat().st_mtime >= cutoff_timestamp:
+                        continue
+                    if is_protected is not None and is_protected(file_id):
                         continue
                     metadata.unlink(missing_ok=True)
                     self.file_path(file_id).unlink(missing_ok=True)
@@ -199,7 +204,8 @@ class TempFileStorage:
                         fcntl.flock(source, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     except BlockingIOError:
                         continue
-                    if not self.metadata_path(file_id).exists():
+                    if (not self.metadata_path(file_id).exists()
+                            and (is_protected is None or not is_protected(file_id))):
                         source_path.unlink(missing_ok=True)
                         removed += 1
             except (FileNotFoundError, OSError):

@@ -35,8 +35,13 @@ def maybe_run_maintenance(
         active_jobs = client.list_jobs("active")
         active_ids = {int(job["job_id"]) for job in active_jobs}
         protected_files = database.file_ids_for_jobs(active_ids)
+        def is_protected_now(file_id: str) -> bool:
+            # Called with the source's exclusive lock held. A print cannot
+            # start until this check and any deletion have completed.
+            current_ids = {int(job["job_id"]) for job in client.list_jobs("active")}
+            return file_id in database.file_ids_for_jobs(current_ids)
         cutoff = datetime.now(timezone.utc) - timedelta(days=UPLOAD_TTL_DAYS)
-        storage.prune_expired(cutoff.timestamp(), protected_files)
+        storage.prune_expired(cutoff.timestamp(), protected_files, is_protected_now)
         history_cutoff = (
             datetime.now(timezone.utc) - timedelta(days=HISTORY_TTL_DAYS)
         ).replace(microsecond=0).isoformat()
