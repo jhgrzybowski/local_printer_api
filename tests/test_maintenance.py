@@ -126,6 +126,25 @@ def test_fallback_claim_protects_source_upload(
     assert storage.file_path(file_id).exists()
 
 
+def test_old_fallback_claims_expire_except_active_jobs(
+    tmp_path: Path, isolated_database: Database,
+) -> None:
+    storage = TempFileStorage(tmp_path / "storage")
+    uri = "ipp://localhost/printers/Canon_MG5350"
+    expired = JobClaim(1, 999, uri, 1000, "urn:uuid:expired")
+    active = JobClaim(1, 123, uri, 1001, "urn:uuid:active")
+    isolated_database.save_fallback_job_claim(expired)
+    isolated_database.save_fallback_job_claim(active)
+    directory = isolated_database.path.parent / "job-claims"
+    old = time.time() - 100 * 86400
+    for path in directory.glob("*.json"):
+        os.utime(path, (old, old))
+
+    maybe_run_maintenance(isolated_database, storage, FakeCupsClient(), force=True)
+
+    assert isolated_database.list_fallback_job_claims(1) == [active]
+
+
 def test_history_is_paginated_per_user(isolated_database: Database) -> None:
     cups = FakeCupsClient()
     app.dependency_overrides[get_cups_client] = lambda: cups

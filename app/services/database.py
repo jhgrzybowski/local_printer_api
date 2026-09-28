@@ -374,6 +374,25 @@ class Database:
             )
         return cursor.rowcount
 
+    def prune_fallback_job_claims(self, cutoff_timestamp: float, active_job_ids: set[int]) -> int:
+        """Expire fallback ownership records while CUPS still tracks active jobs."""
+        removed = 0
+        directory = self.path.parent / "job-claims"
+        for path in directory.glob("*.json"):
+            try:
+                if path.stat().st_mtime >= cutoff_timestamp:
+                    continue
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if int(data["job_id"]) in active_job_ids:
+                    continue
+                path.unlink()
+                removed += 1
+            except (OSError, ValueError, TypeError, KeyError):
+                # A malformed claim cannot authorize access, but leave it for
+                # manual inspection instead of deleting uncertain state.
+                continue
+        return removed
+
     def get_print_history(self, user_id: int, history_id: int) -> dict[str, Any] | None:
         with self.connect() as connection:
             row = connection.execute(

@@ -41,6 +41,10 @@ def maybe_run_maintenance(
             datetime.now(timezone.utc) - timedelta(days=HISTORY_TTL_DAYS)
         ).replace(microsecond=0).isoformat()
         database.prune_print_history(history_cutoff, active_ids)
+        database.prune_fallback_job_claims(
+            (datetime.now(timezone.utc) - timedelta(days=HISTORY_TTL_DAYS)).timestamp(),
+            active_ids,
+        )
     except CupsClientError as exc:
         LOGGER.warning("CUPS unavailable; deferred file and history cleanup: %s", exc)
     except Exception:
