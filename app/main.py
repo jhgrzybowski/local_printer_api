@@ -67,8 +67,8 @@ async def lifespan(_: FastAPI):
 
 async def periodic_maintenance() -> None:
     while True:
-        await asyncio.sleep(INTERVAL_SECONDS)
         await asyncio.to_thread(maybe_run_maintenance, get_database(), get_file_storage(), get_cups_client())
+        await asyncio.sleep(INTERVAL_SECONDS)
 
 
 app = FastAPI(title="Local Printer API", docs_url=None, lifespan=lifespan)
