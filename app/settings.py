@@ -71,7 +71,7 @@ def _env_csv(name: str, default: tuple[str, ...]) -> list[str]:
 QUEUE_NAME = os.getenv("QUEUE_NAME", "Canon_MG5350")
 PRINTER_IP = os.getenv("PRINTER_IP", "192.168.100.100")
 TMP_DIR = os.getenv("TMP_DIR", "/var/tmp/printer-backend")
-DB_PATH = os.getenv("DB_PATH", "/var/tmp/printer-backend/app.db")
+DB_PATH = os.getenv("DB_PATH", "/var/lib/local-printer-api/app.db")
 MAX_UPLOAD_MB = _env_int("MAX_UPLOAD_MB", 50)
 PREVIEW_DPI = _env_int("PREVIEW_DPI", 110)
 CORS_ALLOWED_ORIGINS = _env_csv("CORS_ALLOWED_ORIGINS", DEFAULT_CORS_ALLOWED_ORIGINS)
