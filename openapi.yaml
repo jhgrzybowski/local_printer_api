@@ -911,7 +911,7 @@ components:
 
     PreviewPage:
       type: object
-      required: [page, url, size_bytes]
+      required: [page, url]
       properties:
         page:
           type: integer
