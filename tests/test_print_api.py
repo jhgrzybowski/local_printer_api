@@ -1,17 +1,21 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from pathlib import Path
+from threading import Barrier
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
-from pypdf import PdfWriter
+from pypdf import PdfReader, PdfWriter
 
 from app.main import app, get_cups_client, get_file_storage
+from app.models.print_options import PrintOptions
 from app.services.cups_client import CupsClientError, normalize_job
 from app.services.database import Database
-from app.services.file_storage import TempFileStorage
+from app.services.file_storage import StoredFile, TempFileStorage
+from app.services.print_service import PrintRequestError, submit_print_job
 from tests.helpers import signup_user
 
 
@@ -225,6 +229,59 @@ def test_print_pdf_with_mocked_cups(client: TestClient) -> None:
     assert body["applied_options"]["PageSize"] == "A4"
     assert body["unsupported_options"] == []
     assert any("page order" in warning for warning in body["warnings"])
+
+
+def test_concurrent_page_ranges_spool_their_own_pdf(storage: TempFileStorage) -> None:
+    record = StoredFile("test-file-id-12345", "print.pdf", "application/pdf", 0, 2, True)
+    storage.files_dir.mkdir(parents=True)
+    writer = PdfWriter()
+    writer.add_blank_page(width=72, height=72)
+    writer.add_blank_page(width=144, height=72)
+    with storage.file_path(record.file_id).open("wb") as output:
+        writer.write(output)
+
+    class ConcurrentCupsClient(FakeCupsClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.ready_to_spool = Barrier(2)
+            self.page_widths: dict[str, float] = {}
+            self.paths: list[Path] = []
+
+        def print_file(self, path: Path, title: str, options: dict[str, str]) -> int:
+            self.paths.append(path)
+            self.ready_to_spool.wait(timeout=5)
+            self.page_widths[title] = float(PdfReader(path).pages[0].mediabox.width)
+            return 123
+
+    cups = ConcurrentCupsClient()
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(submit_print_job, cups, storage, record, PrintOptions(pages="1"))
+        second = pool.submit(submit_print_job, cups, storage, record, PrintOptions(pages="2"))
+        first.result(timeout=10)
+        second.result(timeout=10)
+
+    assert len(set(cups.paths)) == 2
+    assert cups.page_widths == {"print.pdf pages 1": 72.0, "print.pdf pages 2": 144.0}
+    assert list(storage.filtered_dir.iterdir()) == []
+
+
+def test_filtered_pdf_is_removed_when_cups_rejects_job(storage: TempFileStorage) -> None:
+    record = StoredFile("test-file-id-12345", "print.pdf", "application/pdf", 0, 1, True)
+    storage.files_dir.mkdir(parents=True)
+    writer = PdfWriter()
+    writer.add_blank_page(width=72, height=72)
+    with storage.file_path(record.file_id).open("wb") as output:
+        writer.write(output)
+
+    class RejectingCupsClient(FakeCupsClient):
+        def print_file(self, path: Path, title: str, options: dict[str, str]) -> int:
+            assert path.exists()
+            raise CupsClientError("CUPS rejected job")
+
+    with pytest.raises(PrintRequestError, match="CUPS rejected job"):
+        submit_print_job(RejectingCupsClient(), storage, record, PrintOptions(pages="1"))
+
+    assert list(storage.filtered_dir.iterdir()) == []
 
 
 def test_print_missing_file_id(client: TestClient) -> None:
