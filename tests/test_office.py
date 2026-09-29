@@ -192,11 +192,21 @@ def test_capabilities_tracks_runtime(office_client, monkeypatch):
     monkeypatch.setattr(OfficeConverter,'format_availability',lambda _:{extension:False for extension in OFFICE_FORMATS})
     assert client.get('/capabilities').json()['office']['available'] is False
     monkeypatch.setattr(OfficeConverter,'format_availability',lambda _:{extension:extension in {'docx','odt'} for extension in OFFICE_FORMATS})
-    response=client.get('/capabilities').json()['office']
+    capabilities = client.get('/capabilities').json()
+    response = capabilities['office']
     assert response['available'] is True
     assert {item['extension']:item['available'] for item in response['formats']}=={
         extension:extension in {'docx','odt'} for extension in OFFICE_FORMATS
     }
+    assert response['address_space_limit_mb'] == OfficeConverter(Path('/tmp')).memory_mb
+    assert response['max_output_bytes'] > 0
+    assert response['max_archive_members'] > 0
+    assert response['max_archive_expanded_bytes'] > 0
+    assert response['max_xml_part_bytes'] > 0
+    assert capabilities['max_image_pixels'] > 0
+    assert capabilities['preview']['pdf_timeout_seconds'] == 30
+    assert capabilities['preview']['max_dimension'] == 1600
+    assert capabilities['preview']['dpi'] > 0
 
 
 def test_format_availability_tracks_installed_components(tmp_path,monkeypatch):

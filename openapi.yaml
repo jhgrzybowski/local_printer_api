@@ -1490,6 +1490,8 @@ components:
       - native_mime_types
       - office
       - max_upload_bytes
+      - max_image_pixels
+      - preview
       - strict_print_options_default
       - print_validation_url
       properties:
@@ -1504,6 +1506,11 @@ components:
           - formats
           - timeout_seconds
           - max_pages
+          - address_space_limit_mb
+          - max_output_bytes
+          - max_archive_members
+          - max_archive_expanded_bytes
+          - max_xml_part_bytes
           - spreadsheet_layout
           - max_concurrent_conversions
           properties:
@@ -1528,6 +1535,16 @@ components:
               type: integer
             max_pages:
               type: integer
+            address_space_limit_mb:
+              type: integer
+            max_output_bytes:
+              type: integer
+            max_archive_members:
+              type: integer
+            max_archive_expanded_bytes:
+              type: integer
+            max_xml_part_bytes:
+              type: integer
             spreadsheet_layout:
               type: string
               const: saved-print-settings
@@ -1536,6 +1553,21 @@ components:
               const: 1
         max_upload_bytes:
           type: integer
+        max_image_pixels:
+          type: integer
+        preview:
+          type: object
+          required:
+          - pdf_timeout_seconds
+          - max_dimension
+          - dpi
+          properties:
+            pdf_timeout_seconds:
+              type: integer
+            max_dimension:
+              type: integer
+            dpi:
+              type: integer
         strict_print_options_default:
           type: boolean
         print_validation_url:

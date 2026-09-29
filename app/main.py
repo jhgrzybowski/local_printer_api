@@ -35,15 +35,27 @@ from app.services.database import Database, JobClaim, User
 from app.services.file_storage import StoredFile, StorageError, TempFileStorage
 from app.services.maintenance import INTERVAL_SECONDS, maybe_run_maintenance
 from app.services.options_summary import build_options_summary
-from app.services.office_conversion import OfficeConverter
-from app.services.office_formats import OFFICE_FORMATS
+from app.services.office_conversion import OUTPUT_LIMIT_BYTES, OfficeConverter
+from app.services.office_formats import (
+    MAX_EXPANDED_BYTES,
+    MAX_MEMBERS,
+    MAX_XML_BYTES,
+    OFFICE_FORMATS,
+)
 from app.services.mime_detection import SUPPORTED_MIME_TYPES
-from app.services.preview import PreviewError, PreviewService
+from app.services.preview import (
+    PDF_PREVIEW_TIMEOUT_SECONDS,
+    PREVIEW_MAX_DIMENSION,
+    PreviewError,
+    PreviewService,
+)
 from app.services.print_service import PrintRequestError, prepare_print_file, submit_print_job
 from app.services.status_translator import translate_error_status, translate_queue_status
 from app.settings import (
     CORS_ALLOWED_ORIGINS,
     DB_PATH,
+    MAX_IMAGE_PIXELS,
+    PREVIEW_DPI,
     QUEUE_NAME,
     SESSION_COOKIE_NAME,
     SESSION_COOKIE_SECURE,
@@ -457,8 +469,19 @@ def capabilities(storage: TempFileStorage = Depends(get_file_storage)) -> dict[s
             {"extension": extension, "mime_type": values[0], "available": office_formats[extension]}
             for extension, values in OFFICE_FORMATS.items()
         ], "timeout_seconds": converter.timeout, "max_pages": converter.max_pages,
+            "address_space_limit_mb": converter.memory_mb,
+            "max_output_bytes": OUTPUT_LIMIT_BYTES,
+            "max_archive_members": MAX_MEMBERS,
+            "max_archive_expanded_bytes": MAX_EXPANDED_BYTES,
+            "max_xml_part_bytes": MAX_XML_BYTES,
             "spreadsheet_layout": "saved-print-settings", "max_concurrent_conversions": 1},
         "max_upload_bytes": storage.max_upload_mb * 1024 * 1024,
+        "max_image_pixels": MAX_IMAGE_PIXELS,
+        "preview": {
+            "pdf_timeout_seconds": PDF_PREVIEW_TIMEOUT_SECONDS,
+            "max_dimension": PREVIEW_MAX_DIMENSION,
+            "dpi": PREVIEW_DPI,
+        },
         "strict_print_options_default": True,
         "print_validation_url": "/print/validate",
     }
