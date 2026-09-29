@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Opt-in live DOCX/XLSX smoke flow. --print submits one page of each format."""
+"""Opt-in live Office smoke flow. --print submits one page of each format."""
 from __future__ import annotations
 
 import argparse
@@ -38,7 +38,7 @@ def main() -> None:
     username = 'office_smoke_' + secrets.token_hex(5)
     post('/auth/signup', {'username': username, 'password': secrets.token_urlsafe(24)})
     try:
-        for extension in ('docx', 'xlsx'):
+        for extension in ('docx', 'xlsx', 'pptx', 'odt', 'ods', 'odp'):
             boundary = secrets.token_hex(16)
             body = (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="smoke.{extension}"\r\nContent-Type: application/octet-stream\r\n\r\n'.encode()
                     + office_document(extension) + f'\r\n--{boundary}--\r\n'.encode())
