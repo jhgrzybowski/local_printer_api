@@ -9,6 +9,9 @@ from app.settings import MAX_IMAGE_PIXELS, PREVIEW_DPI
 
 PDF_PREVIEW_TIMEOUT_SECONDS = 30
 PREVIEW_MAX_DIMENSION = 1600
+# zlib level 1 encodes rendered pages several times faster than the default 6;
+# text pages come out about the same size and scans roughly 10% larger.
+PNG_COMPRESS_LEVEL = 1
 
 
 class PreviewError(RuntimeError):
@@ -73,8 +76,10 @@ class PreviewService:
             raise PreviewError("pdf2image is not installed") from exc
 
         try:
+            # Pillow writes the final PNG, so poppler must hand over raw pixels;
+            # a poppler PNG encode here would be decoded and encoded again.
             images = convert_from_path(
-                str(source), dpi=self.dpi, fmt="png", first_page=page, last_page=page,
+                str(source), dpi=self.dpi, fmt="ppm", first_page=page, last_page=page,
                 timeout=PDF_PREVIEW_TIMEOUT_SECONDS, size=PREVIEW_MAX_DIMENSION,
             )
             if len(images) != 1:
@@ -120,7 +125,7 @@ def _save_png_atomic(image: object, destination: Path) -> None:
     os.close(fd)
     temporary = Path(temporary_name)
     try:
-        image.save(temporary, "PNG")  # type: ignore[attr-defined]
+        image.save(temporary, "PNG", compress_level=PNG_COMPRESS_LEVEL)  # type: ignore[attr-defined]
         temporary.replace(destination)
     finally:
         temporary.unlink(missing_ok=True)
