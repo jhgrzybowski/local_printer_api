@@ -66,8 +66,12 @@ def inspect_office(path: Path, filename: str) -> str | None:
                 if name.startswith("/") or ".." in parts or "\\" in name or entry.flag_bits & 1:
                     raise OfficeFormatError("Unsafe or encrypted Office archive")
                 lower = name.lower()
-                if any(token in lower for token in ("vbaproject", "scripts/", "basic/", "embeddings/", "externallinks/", "activex/", "object 1/", "objectreplacements/")):
+                if any(token in lower for token in ("vbaproject", "scripts/", "basic/", "embeddings/", "externallinks/", "activex/", "objectreplacements/")):
                     raise OfficeFormatError("Macros, embedded objects, and external data links are not supported")
+                if extension.startswith("od"):
+                    directory_parts = parts if entry.is_dir() else parts[:-1]
+                    if any(part.lower().startswith("object") for part in directory_parts):
+                        raise OfficeFormatError("Macros, embedded objects, and external data links are not supported")
                 if lower.endswith((".xml", ".rels")):
                     data = archive.read(entry)
                     if b"<!DOCTYPE" in data.replace(b"\x00", b"").upper() or b"<!ENTITY" in data.replace(b"\x00", b"").upper():

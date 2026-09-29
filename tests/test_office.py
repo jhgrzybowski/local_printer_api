@@ -52,6 +52,16 @@ def test_unsafe_documents_rejected(tmp_path, name, content):
         inspect_office(source, 'file.docx')
 
 
+@pytest.mark.parametrize('object_directory',['Object 2','Object 17','ObjectCustom'])
+def test_odf_embedded_object_directories_rejected(tmp_path,object_directory):
+    buffer=BytesIO(office_document('odt'))
+    with ZipFile(buffer,'a') as archive:
+        archive.writestr(f'{object_directory}/content.xml','<object/>')
+    source=tmp_path/'file.odt';source.write_bytes(buffer.getvalue())
+    with pytest.raises(OfficeFormatError,match='embedded objects'):
+        inspect_office(source,source.name)
+
+
 @pytest.fixture
 def office_client(tmp_path, monkeypatch):
     storage = TempFileStorage(tmp_path / 'storage')
