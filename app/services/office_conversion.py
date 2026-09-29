@@ -119,6 +119,8 @@ class OfficeConverter:
                     raise ConversionError("Office converter could not start", 503) from exc
                 pdf = output / "document.pdf"
                 if returncode != 0 or not pdf.is_file():
+                    if returncode == -signal.SIGXCPU:
+                        raise ConversionError("Office conversion exceeded its CPU time limit", 504)
                     output_size = pdf.stat().st_size if pdf.is_file() else 0
                     if returncode == -signal.SIGXFSZ or output_size >= OUTPUT_LIMIT_BYTES:
                         raise ConversionError("Converted document exceeded its output file size limit", 413)

@@ -12,7 +12,8 @@ import sys
 
 def restrict_process(memory_mb: int, cpu_seconds: int, output_bytes: int) -> None:
     resource.setrlimit(resource.RLIMIT_AS, (memory_mb * 1024 * 1024,) * 2)
-    resource.setrlimit(resource.RLIMIT_CPU, (cpu_seconds,) * 2)
+    cpu_hard_seconds = cpu_seconds * (os.cpu_count() or 1) + 1
+    resource.setrlimit(resource.RLIMIT_CPU, (cpu_seconds, cpu_hard_seconds))
     resource.setrlimit(resource.RLIMIT_FSIZE, (output_bytes,) * 2)
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     # Seccomp survives exec and inheritance. LibreOffice may use local UNIX

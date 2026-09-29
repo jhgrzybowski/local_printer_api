@@ -5,6 +5,7 @@ import hashlib
 from io import BytesIO
 import os
 from pathlib import Path
+import signal
 import shutil
 import subprocess
 import sys
@@ -222,6 +223,34 @@ def test_worker_blocks_network(tmp_path):
     result=subprocess.run([sys.executable,office_worker.__file__,'256','5','1048576',sys.executable,'-c',script],capture_output=True)
     assert result.returncode!=0
     assert b'Operation not permitted' in result.stderr
+
+
+def test_worker_cpu_soft_limit_precedes_hard_limit(monkeypatch):
+    from app.services import office_worker
+    resource_limits={}
+    monkeypatch.setattr(office_worker.resource,'setrlimit',lambda kind,limits:resource_limits.__setitem__(kind,limits))
+    monkeypatch.setattr(office_worker.os,'cpu_count',lambda:4)
+    monkeypatch.setattr(office_worker.ctypes.util,'find_library',lambda _:None)
+    with pytest.raises(RuntimeError,match='libseccomp'):
+        office_worker.restrict_process(256,3,1024)
+    assert resource_limits[office_worker.resource.RLIMIT_CPU]==(3,13)
+
+
+def test_cpu_limit_signal_returns_conversion_timeout(tmp_path,monkeypatch):
+    from app.services import office_conversion
+    class CpuLimitedProcess:
+        pid=2147483647
+        def wait(self,timeout=None):
+            return -signal.SIGXCPU
+    converter=OfficeConverter(tmp_path/'work')
+    source=tmp_path/'source';source.write_bytes(office_document('docx'))
+    monkeypatch.setattr(converter,'executable',lambda:'/usr/bin/libreoffice')
+    monkeypatch.setattr(office_conversion.subprocess,'Popen',lambda *args,**kwargs:CpuLimitedProcess())
+
+    with pytest.raises(ConversionError) as error:
+        converter.convert(source,'docx',tmp_path/'out.pdf')
+    assert error.value.status_code==504
+    assert 'CPU time limit' in error.value.message
 
 
 @pytest.mark.integration
