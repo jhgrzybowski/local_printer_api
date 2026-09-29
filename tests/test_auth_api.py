@@ -198,6 +198,36 @@ def test_invalid_and_expired_sessions_return_401(isolated_database: Database) ->
     assert invalid.status_code == 401
 
 
+def test_session_last_seen_is_refreshed_at_most_once_per_interval(isolated_database: Database) -> None:
+    app.dependency_overrides.clear()
+    with TestClient(app) as client:
+        signup_user(client)
+        token_hash = hash_token(str(client.cookies.get(SESSION_COOKIE_NAME)))
+
+        def last_seen() -> str:
+            with isolated_database.connect() as connection:
+                return str(connection.execute(
+                    "SELECT last_seen_at FROM sessions WHERE token_hash = ?", (token_hash,),
+                ).fetchone()[0])
+
+        with isolated_database.connect() as connection:
+            connection.execute(
+                "UPDATE sessions SET last_seen_at = ? WHERE token_hash = ?",
+                ("2000-01-01T00:00:00+00:00", token_hash),
+            )
+        assert client.get("/auth/me").status_code == 200
+        refreshed = last_seen()
+        assert refreshed > "2000-01-01T00:00:00+00:00"
+
+        with isolated_database.connect() as connection:
+            connection.execute(
+                "UPDATE sessions SET last_seen_at = ? WHERE token_hash = ?",
+                ("9999-01-01T00:00:00+00:00", token_hash),
+            )
+        assert client.get("/auth/me").status_code == 200
+        assert last_seen() == "9999-01-01T00:00:00+00:00"
+
+
 def test_preferences_are_persisted_and_user_scoped() -> None:
     app.dependency_overrides.clear()
     with TestClient(app) as alice, TestClient(app) as bob:

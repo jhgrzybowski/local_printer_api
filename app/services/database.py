@@ -8,11 +8,14 @@ import tempfile
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
 from app.settings import DB_PATH
+
+
+SESSION_TOUCH_INTERVAL_SECONDS = 60
 
 
 def utc_now() -> str:
@@ -243,12 +246,14 @@ class Database:
             )
 
     def get_user_for_session(self, token_hash: str) -> User | None:
-        now = utc_now()
+        current = datetime.now(timezone.utc).replace(microsecond=0)
+        now = current.isoformat()
         with self.connect() as connection:
             row = connection.execute(
                 """
                 SELECT users.id, users.username, users.display_name,
-                       users.created_at, users.updated_at, users.identity_id
+                       users.created_at, users.updated_at, users.identity_id,
+                       sessions.last_seen_at
                 FROM sessions
                 JOIN users ON users.id = sessions.user_id
                 WHERE sessions.token_hash = ?
@@ -256,7 +261,10 @@ class Database:
                 """,
                 (token_hash, now),
             ).fetchone()
-            if row is not None:
+            # Every authenticated request passes through here. Writing each
+            # time would serialize all polling on SQLite commits and fsyncs.
+            stale_before = (current - timedelta(seconds=SESSION_TOUCH_INTERVAL_SECONDS)).isoformat()
+            if row is not None and str(row["last_seen_at"]) < stale_before:
                 connection.execute(
                     "UPDATE sessions SET last_seen_at = ? WHERE token_hash = ?",
                     (now, token_hash),
