@@ -454,7 +454,14 @@ def sanitize_filename(filename: str | None) -> str:
     name = (filename or "upload").replace("\\", "/").rsplit("/", 1)[-1].strip()
     name = re.sub(r"[^A-Za-z0-9._-]+", "_", name)
     name = name.lstrip(".")
-    name = name[:180].strip("._-")
+    if len(name) > 180:
+        suffix = Path(name).suffix
+        if suffix and len(suffix) < 180:
+            stem = name[:-len(suffix)]
+            name = f"{stem[:180 - len(suffix)].rstrip('._-')}{suffix}"
+        else:
+            name = name[:180]
+    name = name.strip("._-")
     return name or "upload"
 
 

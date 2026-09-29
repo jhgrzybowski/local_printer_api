@@ -111,6 +111,18 @@ def test_office_api_reuses_pdf_for_preview_and_print(office_client, extension, m
     assert client.get(f"/files/{info['file_id']}").status_code==404
 
 
+@pytest.mark.parametrize('extension', OFFICE_FORMATS)
+def test_long_office_filename_preserves_extension(office_client,extension):
+    client,_,_,calls=office_client
+    filename=f"{'long-name-' * 25}.{extension}"
+    response=client.post('/files',files={'file':(filename,office_document(extension))})
+    assert response.status_code==200, response.text
+    sanitized=response.json()['original_filename']
+    assert len(sanitized)<=180
+    assert sanitized.endswith(f'.{extension}')
+    assert calls==[extension]
+
+
 def test_strict_print_rejects_dropped_options(office_client):
     client, _, cups, _=office_client
     info=client.post('/files',files={'file':('test.pdf',make_pdf(),'application/pdf')}).json()
