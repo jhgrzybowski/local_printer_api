@@ -44,6 +44,7 @@ class FakeCupsClient:
         self.queue = queue or ready_queue()
         self.submissions: list[dict[str, Any]] = []
         self.list_scopes: list[str] = []
+        self.first_job_ids: list[int | None] = []
         self.jobs = {
             job_id: normalize_job(job_id, {
                 "job-name": name, "job-state": state,
@@ -72,13 +73,15 @@ class FakeCupsClient:
         self.submissions.append({"path": path, "title": title, "options": options})
         return 123
 
-    def list_jobs(self, scope: str = "active") -> list[dict[str, Any]]:
+    def list_jobs(self, scope: str = "active", first_job_id: int | None = None) -> list[dict[str, Any]]:
         self.list_scopes.append(scope)
+        self.first_job_ids.append(first_job_id)
+        jobs = [job for job in self.jobs.values() if first_job_id is None or job["job_id"] >= first_job_id]
         if scope == "active":
-            return [job for job in self.jobs.values() if job["is_active"]]
+            return [job for job in jobs if job["is_active"]]
         if scope == "completed":
-            return [job for job in self.jobs.values() if job["is_terminal"]]
-        return list(self.jobs.values())
+            return [job for job in jobs if job["is_terminal"]]
+        return jobs
 
     def get_job(self, job_id: int) -> dict[str, Any] | None:
         return self.jobs.get(job_id)
@@ -534,6 +537,22 @@ def test_jobs_uses_one_cups_listing_for_scope_and_counts(
     assert cups.list_scopes == ["all"]
     assert [job["job_id"] for job in response.json()["jobs"]] == expected_ids
     assert response.json()["counts"] == {"active": 1, "completed": 2, "all": 3}
+
+
+def test_jobs_listing_starts_at_lowest_claimed_job(isolated_database: Database) -> None:
+    cups = FakeCupsClient()
+    app.dependency_overrides.clear()
+    app.dependency_overrides[get_cups_client] = lambda: cups
+    with TestClient(app) as client:
+        user = signup_user(client)
+        for job_id in (789, 456):
+            grant_cups_job(isolated_database, job_id, user["user"]["id"])
+        response = client.get("/jobs?scope=all")
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert cups.first_job_ids == [456]
+    assert [job["job_id"] for job in response.json()["jobs"]] == [456, 789]
 
 
 def test_jobs_unknown_state_is_only_in_all_count(isolated_database: Database) -> None:

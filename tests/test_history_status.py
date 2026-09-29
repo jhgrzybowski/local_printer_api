@@ -113,7 +113,7 @@ def test_cups_outage_keeps_last_known_history(isolated_database: Database) -> No
             history_id = history_row(isolated_database, user_id, 123)
             assert client.get(f"/history/{history_id}").json()["status"] == "processing"
 
-            def unavailable(scope: str = "all") -> list[dict[str, object]]:
+            def unavailable(scope: str = "all", first_job_id: int | None = None) -> list[dict[str, object]]:
                 raise CupsClientError("CUPS unavailable")
 
             cups.list_jobs = unavailable  # type: ignore[method-assign]

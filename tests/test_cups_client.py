@@ -11,14 +11,17 @@ class RecordingConnection:
     def __init__(self, jobs: dict[int, dict[str, Any]]) -> None:
         self.jobs = jobs
         self.which_jobs: list[str] = []
+        self.first_job_ids: list[int] = []
         self.cancelled: list[tuple[int, bool]] = []
 
     def getJobs(
         self,
         which_jobs: str = "not-completed",
         requested_attributes: list[str] | None = None,
+        first_job_id: int = -1,
     ) -> dict[int, dict[str, Any]]:
         self.which_jobs.append(which_jobs)
+        self.first_job_ids.append(first_job_id)
         if which_jobs == "not-completed":
             return {
                 job_id: attrs
@@ -165,7 +168,18 @@ def test_list_jobs_maps_active_scope_to_not_completed() -> None:
     jobs = client.list_jobs("active")
 
     assert connection.which_jobs == ["not-completed"]
+    assert connection.first_job_ids == [-1]
     assert [job["job_id"] for job in jobs] == [1]
+
+
+def test_list_jobs_passes_lower_job_id_bound() -> None:
+    connection = RecordingConnection({})
+    client = CupsClient()
+    client._connection = lambda: connection  # type: ignore[method-assign]
+
+    client.list_jobs("all", first_job_id=40)
+
+    assert connection.first_job_ids == [40]
 
 
 def test_list_jobs_fetches_details_when_bulk_snapshot_omits_uuid() -> None:
@@ -184,9 +198,10 @@ def test_list_jobs_fetches_details_when_bulk_snapshot_omits_uuid() -> None:
             self,
             which_jobs: str = "not-completed",
             requested_attributes: list[str] | None = None,
+            first_job_id: int = -1,
         ) -> dict[int, dict[str, Any]]:
             assert which_jobs == "all"
-            assert requested_attributes == ["all"]
+            assert requested_attributes is not None and "job-uuid" in requested_attributes
             return {21: snapshot}
 
         def getJobAttributes(self, job_id: int) -> dict[str, Any]:

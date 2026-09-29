@@ -23,7 +23,20 @@ JOB_SCOPE_TO_CUPS = {
     "completed": "completed",
     "all": "all",
 }
-JOB_REQUESTED_ATTRIBUTES = ["all"]
+# Only what normalize_job reads. Asking for "all" makes CUPS encode and pycups
+# decode every stored attribute of every retained job on each poll.
+JOB_REQUESTED_ATTRIBUTES = [
+    "job-id",
+    "job-name",
+    "document-name-supplied",
+    "job-originating-user-name",
+    "job-state",
+    "job-state-reasons",
+    "job-printer-uri",
+    "time-at-creation",
+    "time-at-completed",
+    "job-uuid",
+]
 
 ACTIVE_JOB_STATES = {3, 4, 5, 6}
 TERMINAL_JOB_STATES = {7, 8, 9}
@@ -147,13 +160,14 @@ class CupsClient:
         except Exception as exc:
             raise CupsClientError(f"CUPS print submission failed: {exc}") from exc
 
-    def list_jobs(self, scope: str = "active") -> list[dict[str, Any]]:
+    def list_jobs(self, scope: str = "active", first_job_id: int | None = None) -> list[dict[str, Any]]:
         which_jobs = JOB_SCOPE_TO_CUPS[scope]
         try:
             connection = self._connection()
             jobs = connection.getJobs(
                 which_jobs=which_jobs,
                 requested_attributes=JOB_REQUESTED_ATTRIBUTES,
+                first_job_id=-1 if first_job_id is None else first_job_id,
             )
         except Exception as exc:
             raise CupsClientError(f"CUPS job query failed: {exc}") from exc

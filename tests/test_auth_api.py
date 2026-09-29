@@ -42,7 +42,7 @@ class FakeCupsClient:
     def print_file(self, path: Path, title: str, options: dict[str, str]) -> int:
         return 321
 
-    def list_jobs(self, scope: str = "active") -> list[dict[str, Any]]:
+    def list_jobs(self, scope: str = "active", first_job_id: int | None = None) -> list[dict[str, Any]]:
         active_job = {
             "job_id": 321,
             "name": "alice-private.pdf",
