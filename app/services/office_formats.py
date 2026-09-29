@@ -28,6 +28,7 @@ OFFICE_COMPONENTS = {
 MAX_EXPANDED_BYTES = 100 * 1024 * 1024
 MAX_MEMBERS = 2000
 MAX_XML_BYTES = 4 * 1024 * 1024
+ODF_EMBEDDED_OBJECT_DIR = re.compile(r"^object\s+\d+$", re.IGNORECASE)
 
 
 class OfficeFormatError(ValueError):
@@ -71,7 +72,7 @@ def inspect_office(path: Path, filename: str) -> str | None:
                     raise OfficeFormatError("Macros, embedded objects, and external data links are not supported")
                 if extension.startswith("od"):
                     directory_parts = parts if entry.is_dir() else parts[:-1]
-                    if any(part.lower().startswith("object") for part in directory_parts):
+                    if any(ODF_EMBEDDED_OBJECT_DIR.fullmatch(part) for part in directory_parts):
                         raise OfficeFormatError("Macros, embedded objects, and external data links are not supported")
                 if lower.endswith((".xml", ".rels")):
                     if entry.file_size > MAX_XML_BYTES:

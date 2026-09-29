@@ -53,7 +53,7 @@ def test_unsafe_documents_rejected(tmp_path, name, content):
         inspect_office(source, 'file.docx')
 
 
-@pytest.mark.parametrize('object_directory',['Object 2','Object 17','ObjectCustom'])
+@pytest.mark.parametrize('object_directory', ['Object 2', 'Object 17'])
 def test_odf_embedded_object_directories_rejected(tmp_path,object_directory):
     buffer=BytesIO(office_document('odt'))
     with ZipFile(buffer,'a') as archive:
@@ -61,6 +61,17 @@ def test_odf_embedded_object_directories_rejected(tmp_path,object_directory):
     source=tmp_path/'file.odt';source.write_bytes(buffer.getvalue())
     with pytest.raises(OfficeFormatError,match='embedded objects'):
         inspect_office(source,source.name)
+
+
+@pytest.mark.parametrize('directory', ['ObjectCustom', 'Objectives'])
+def test_odf_ordinary_object_named_directories_are_allowed(tmp_path, directory):
+    buffer = BytesIO(office_document('odt'))
+    with ZipFile(buffer, 'a') as archive:
+        archive.writestr(f'{directory}/notes.txt', 'ordinary content')
+    source = tmp_path / 'file.odt'
+    source.write_bytes(buffer.getvalue())
+
+    assert inspect_office(source, source.name) == 'odt'
 
 
 def test_oversized_xml_member_rejected_before_parsing(tmp_path,monkeypatch):
