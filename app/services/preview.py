@@ -5,7 +5,10 @@ import tempfile
 from pathlib import Path
 
 from app.services.file_storage import StoredFile, TempFileStorage
-from app.settings import PREVIEW_DPI
+from app.settings import MAX_IMAGE_PIXELS, PREVIEW_DPI
+
+PDF_PREVIEW_TIMEOUT_SECONDS = 30
+PREVIEW_MAX_DIMENSION = 1600
 
 
 class PreviewError(RuntimeError):
@@ -27,10 +30,10 @@ class PreviewService:
         preview_dir = self.storage.preview_dir(record.file_id)
         expected_count = record.page_count or 1
         paths = [preview_dir / f"page-{page}.png" for page in range(1, expected_count + 1)]
-        if record.detected_mime == "application/pdf":
+        if record.printable_mime == "application/pdf":
             # Metadata requests only need page URLs. Render a PDF page when its
             # PNG is requested so a large document does not occupy a worker.
-            if not self.storage.file_path(record.file_id).exists():
+            if not self.storage.printable_path(record).exists():
                 raise PreviewError("Stored file is missing", 404)
             return paths
 
@@ -38,7 +41,7 @@ class PreviewService:
             return paths
 
         preview_dir.mkdir(parents=True, exist_ok=True)
-        source = self.storage.file_path(record.file_id)
+        source = self.storage.printable_path(record)
         if not source.exists():
             raise PreviewError("Stored file is missing", 404)
 
@@ -55,9 +58,9 @@ class PreviewService:
 
         self.ensure_previews(record)
         path = self.storage.preview_dir(record.file_id) / f"page-{page}.png"
-        if record.detected_mime == "application/pdf" and not path.exists():
+        if record.printable_mime == "application/pdf" and not path.exists():
             path.parent.mkdir(parents=True, exist_ok=True)
-            self._render_pdf(self.storage.file_path(record.file_id), path, page)
+            self._render_pdf(self.storage.printable_path(record), path, page)
         if not path.exists():
             raise PreviewError("Preview page not found", 404)
         return path
@@ -65,13 +68,14 @@ class PreviewService:
     def _render_pdf(self, source: Path, destination: Path, page: int) -> None:
         try:
             from pdf2image import convert_from_path
-            from pdf2image.exceptions import PDFInfoNotInstalledError, PDFPageCountError
+            from pdf2image.exceptions import PDFInfoNotInstalledError, PDFPageCountError, PDFPopplerTimeoutError
         except ImportError as exc:
             raise PreviewError("pdf2image is not installed") from exc
 
         try:
             images = convert_from_path(
-                str(source), dpi=self.dpi, fmt="png", first_page=page, last_page=page
+                str(source), dpi=self.dpi, fmt="png", first_page=page, last_page=page,
+                timeout=PDF_PREVIEW_TIMEOUT_SECONDS, size=PREVIEW_MAX_DIMENSION,
             )
             if len(images) != 1:
                 raise PreviewError("Unable to render PDF preview page", 400)
@@ -79,6 +83,8 @@ class PreviewService:
                 _save_png_atomic(image, destination)
         except PDFInfoNotInstalledError as exc:
             raise PreviewError("Poppler is not installed or not available on PATH") from exc
+        except PDFPopplerTimeoutError as exc:
+            raise PreviewError("PDF preview exceeded its time limit", 504) from exc
         except PDFPageCountError as exc:
             raise PreviewError("Unable to inspect PDF for preview generation", 400) from exc
         except PreviewError:
@@ -94,10 +100,17 @@ class PreviewService:
 
         try:
             with Image.open(source) as image:
-                image.thumbnail((1600, 1600))
+                if image.width * image.height > MAX_IMAGE_PIXELS:
+                    raise PreviewError(
+                        f"Image exceeds MAX_IMAGE_PIXELS={MAX_IMAGE_PIXELS}",
+                        413,
+                    )
+                image.thumbnail((PREVIEW_MAX_DIMENSION, PREVIEW_MAX_DIMENSION))
                 output = preview_dir / "page-1.png"
                 _save_png_atomic(image.convert("RGB"), output)
                 return output
+        except PreviewError:
+            raise
         except Exception as exc:
             raise PreviewError(f"Unable to generate image preview: {exc}", 400) from exc
 

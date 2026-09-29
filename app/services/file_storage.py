@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import json
 import os
 import re
@@ -17,12 +19,15 @@ import fcntl
 from starlette.datastructures import UploadFile
 
 from app.services.mime_detection import SUPPORTED_MIME_TYPES, detect_mime
+from app.services.office_conversion import ConversionError, OfficeConverter
+from app.services.office_formats import OfficeFormatError, OFFICE_FORMATS, inspect_office
 from app.services.pdf_metadata import PdfMetadataError, get_pdf_page_count
-from app.settings import MAX_UPLOAD_MB, TMP_DIR
+from app.settings import MAX_IMAGE_PIXELS, MAX_UPLOAD_MB, TMP_DIR
 
 
 FILE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{16,80}$")
 CHUNK_SIZE = 1024 * 1024
+KNOWN_UPLOAD_EXTENSIONS = {"pdf", "png", "jpg", "jpeg", "txt", *OFFICE_FORMATS}
 
 
 class StorageError(ValueError):
@@ -45,6 +50,13 @@ class StoredFile:
     page_count: int | None
     preview_available: bool
     owner_user_id: int | None = None
+    converted: bool = False
+    printable_sha256: str | None = None
+    warnings: tuple[str, ...] = ()
+
+    @property
+    def printable_mime(self) -> str:
+        return "application/pdf" if self.converted else self.detected_mime
 
 
 class TempFileStorage:
@@ -59,6 +71,7 @@ class TempFileStorage:
         self.metadata_dir = self.root / "metadata"
         self.previews_dir = self.root / "previews"
         self.filtered_dir = self.root / "filtered"
+        self.converted_dir = self.root / "converted"
 
     async def save_upload(self, upload: UploadFile, owner_user_id: int) -> StoredFile:
         self._ensure_dirs()
@@ -95,25 +108,71 @@ class TempFileStorage:
             file_path.unlink(missing_ok=True)
             raise StorageError("Uploaded file is empty", 400)
 
-        detected_mime = detect_mime(sample)
-        if detected_mime not in SUPPORTED_MIME_TYPES:
-            file_path.unlink(missing_ok=True)
-            raise StorageError(f"Unsupported MIME type: {detected_mime}", 415)
-
-        page_count = self._page_count(file_path, detected_mime)
-        preview_available = detected_mime in {"application/pdf", "image/png", "image/jpeg"}
-
-        record = StoredFile(
-            file_id=file_id,
-            original_filename=original_filename,
-            detected_mime=detected_mime,
-            size_bytes=size_bytes,
-            page_count=page_count,
-            preview_available=preview_available,
-            owner_user_id=owner_user_id,
+        return await asyncio.to_thread(
+            self._finish_upload, file_id, original_filename, sample, size_bytes, owner_user_id,
         )
-        self.write_record(record)
-        return record
+
+    def _finish_upload(self, file_id: str, original_filename: str, sample: bytes,
+                       size_bytes: int, owner_user_id: int) -> StoredFile:
+        file_path = self.file_path(file_id)
+        converted = False
+        warnings: tuple[str, ...] = ()
+        try:
+            extension = inspect_office(file_path, original_filename)
+            if extension:
+                detected_mime = OFFICE_FORMATS[extension][0]
+                page_count = OfficeConverter(self.root / "conversion-work").convert(
+                    file_path, extension, self.converted_path(file_id),
+                )
+                converted = True
+                warnings = ("Office layout may differ from Microsoft Office; review the generated PDF before printing.",)
+                if extension in {"xlsx", "ods"}:
+                    warnings += ("Spreadsheet pages follow saved print areas, paper sizes, and scaling; hidden sheets are not forced into the output.",)
+            else:
+                detected_mime = detect_mime(sample)
+                if detected_mime not in SUPPORTED_MIME_TYPES:
+                    raise StorageError(f"Unsupported MIME type: {detected_mime}", 415)
+                page_count = self._page_count(file_path, detected_mime)
+                if detected_mime in {"image/png", "image/jpeg"}:
+                    from PIL import Image
+                    try:
+                        with Image.open(file_path) as image:
+                            if image.width * image.height > MAX_IMAGE_PIXELS:
+                                raise StorageError(
+                                    f"Image exceeds MAX_IMAGE_PIXELS={MAX_IMAGE_PIXELS}",
+                                    413,
+                                )
+                            image.verify()
+                    except StorageError:
+                        raise
+                    except Exception as exc:
+                        raise StorageError("Corrupt or unreadable image", 400) from exc
+            printable = self.converted_path(file_id) if converted else file_path
+            with printable.open("rb") as source:
+                digest = hashlib.file_digest(source, "sha256").hexdigest()
+            record = StoredFile(
+                file_id=file_id, original_filename=original_filename, detected_mime=detected_mime,
+                size_bytes=size_bytes, page_count=page_count,
+                preview_available=converted or detected_mime in {"application/pdf", "image/png", "image/jpeg"},
+                owner_user_id=owner_user_id, converted=converted, printable_sha256=digest, warnings=warnings,
+            )
+            self.write_record(record)
+            return record
+        except Exception as exc:
+            file_path.unlink(missing_ok=True)
+            self.converted_path(file_id).unlink(missing_ok=True)
+            self.metadata_path(file_id).unlink(missing_ok=True)
+            if isinstance(exc, OfficeFormatError):
+                raise StorageError(str(exc), 415) from exc
+            if isinstance(exc, ConversionError):
+                raise StorageError(exc.message, exc.status_code) from exc
+            raise
+
+    def converted_path(self, file_id: str) -> Path:
+        return self.converted_dir / f"{file_id}.pdf"
+
+    def printable_path(self, record: StoredFile) -> Path:
+        return self.converted_path(record.file_id) if record.converted else self.file_path(record.file_id)
 
     def get_record(self, file_id: str) -> StoredFile | None:
         if not is_safe_file_id(file_id):
@@ -132,7 +191,16 @@ class TempFileStorage:
     def write_record(self, record: StoredFile) -> None:
         self._ensure_dirs()
         path = self.metadata_path(record.file_id)
-        path.write_text(json.dumps(asdict(record), sort_keys=True), encoding="utf-8")
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=self.metadata_dir,
+                                         prefix=f".{record.file_id}-", delete=False) as output:
+            temporary = Path(output.name)
+            try:
+                output.write(json.dumps(asdict(record), sort_keys=True))
+                output.flush()
+                os.fsync(output.fileno())
+                os.replace(temporary, path)
+            finally:
+                temporary.unlink(missing_ok=True)
 
     def list_unowned_records(self) -> list[StoredFile]:
         """Inventory readable legacy metadata with a matching uploaded file."""
@@ -274,6 +342,13 @@ class TempFileStorage:
                     removed += 1
             except (FileNotFoundError, OSError):
                 continue
+        for artifact in self.converted_dir.glob("*.pdf"):
+            if artifact.stem not in protected_file_ids and not self.metadata_path(artifact.stem).exists():
+                try:
+                    if artifact.stat().st_mtime < cutoff_timestamp:
+                        artifact.unlink(missing_ok=True)
+                except OSError:
+                    continue
         # A crash can leave a payload or derived output without metadata.
         for source_path in self.files_dir.glob("*"):
             file_id = source_path.name
@@ -332,11 +407,26 @@ class TempFileStorage:
                         filtered.unlink()
             except (FileNotFoundError, OSError):
                 continue
+        work = self.root / "conversion-work"
+        if work.is_dir():
+            with (work / ".office.lock").open("a+b") as lock:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    pass
+                else:
+                    for abandoned in work.glob("office-*"):
+                        try:
+                            if abandoned.is_dir() and abandoned.stat().st_mtime < cutoff_timestamp:
+                                shutil.rmtree(abandoned)
+                        except OSError:
+                            continue
         return removed
 
     def _remove_upload_group(self, file_id: str, metadata: Path) -> None:
         metadata.unlink(missing_ok=True)
         self.file_path(file_id).unlink(missing_ok=True)
+        self.converted_path(file_id).unlink(missing_ok=True)
         shutil.rmtree(self.preview_dir(file_id), ignore_errors=True)
         for filtered in (
             self.filtered_dir / f"{file_id}.pdf",
@@ -371,9 +461,22 @@ class TempFileStorage:
 def sanitize_filename(filename: str | None) -> str:
     name = (filename or "upload").replace("\\", "/").rsplit("/", 1)[-1].strip()
     name = re.sub(r"[^A-Za-z0-9._-]+", "_", name)
-    name = name.lstrip(".")
-    name = name[:180].strip("._-")
-    return name or "upload"
+    suffix = Path(name).suffix
+    if not suffix and name.startswith("."):
+        possible_extension = name.rsplit(".", 1)[-1].lower()
+        if possible_extension in KNOWN_UPLOAD_EXTENSIONS:
+            suffix = f".{possible_extension}"
+    stem = name[:-len(suffix)] if suffix else name
+    stem = stem.strip("._-")
+    suffix = suffix if suffix not in {".", ".."} else ""
+    if not stem:
+        stem = "upload"
+    if suffix and len(suffix) < 180:
+        stem = stem[:180 - len(suffix)].rstrip("._-") or "upload"
+        name = f"{stem}{suffix}"
+    else:
+        name = f"{stem}{suffix}"[:180].strip("._-") or "upload"
+    return name
 
 
 def is_safe_file_id(file_id: str) -> bool:

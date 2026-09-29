@@ -26,7 +26,8 @@ Python 3 FastAPI backend for Canon PIXMA MG5350 printer manager on LAN.
 - Probe script and CUPS queue setup, health/status, PDF/image/text upload, preview, print submission, PDF page ranges, job list/cancel, and CUPS/PPD option mapping are implemented.
 - Keep CUPS authoritative for live queue and job state; SQLite history records submissions for each user.
 - Monitor retention and disk use on the target host; prioritize accurate option discovery/mapping and physical print validation.
-- Optional Office conversion comes later.
+- Office-enabled builds convert DOCX/XLSX/PPTX/ODT/ODS/ODP once to PDF at upload; previews and printing must use that stored artifact.
+- Keep /capabilities, /print/validate, and openapi.yaml consistent with runtime behavior.
 
 ## Important trade-offs
 - Preview is an approximation, not a guaranteed exact rendering of the final CUPS output.

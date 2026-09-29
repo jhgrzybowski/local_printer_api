@@ -32,6 +32,7 @@ Current backend capabilities:
   - PNG
   - JPEG
   - plain text
+  - DOCX, XLSX, PPTX, ODT, ODS, ODP with Office conversion enabled
 - Temporary file storage with metadata sidecars.
 - PDF page-count detection.
 - PDF and image preview generation.
@@ -456,3 +457,15 @@ For more detail, see:
 * `DEPLOYMENT_DOCKER.md` — Docker build, compose, socket, and deployment notes.
 * `TROUBLESHOOTING.md` — CUPS, driver, LPD, backend, and diagnostic notes.
 * `LIMITATIONS_AND_FUTURE.md` — known limitations and planned improvements.
+
+## Office documents and app integration
+
+Office-enabled builds accept DOCX, XLSX, PPTX, ODT, ODS, and ODP, converting once
+into a PDF shared by preview and printing. Use `/capabilities` for supported
+formats and limits, `/files/{file_id}` for metadata, `/files/{file_id}/pdf` for
+that PDF, and `/print/validate` before submission. Unsupported print options
+are rejected by default in API 0.2; set `strict_options: false` only for the
+previous warning-and-drop behavior.
+
+See [Office and app integration](OFFICE_AND_APP_INTEGRATION.md) for the complete
+workflow, deployment dependencies, spreadsheet layout policy, and limitations.

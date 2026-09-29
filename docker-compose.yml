@@ -2,6 +2,8 @@ services:
   api:
     build:
       context: .
+      args:
+        INSTALL_OFFICE: "${INSTALL_OFFICE:-true}"
     image: local-printer-api:latest
     container_name: local-printer-api
     restart: unless-stopped
@@ -13,9 +15,14 @@ services:
       TMP_DIR: /var/tmp/printer-backend
       DB_PATH: /var/lib/local-printer-api/app.db
       MAX_UPLOAD_MB: "50"
+      MAX_IMAGE_PIXELS: "${MAX_IMAGE_PIXELS:-30000000}"
       UPLOAD_TTL_DAYS: "${UPLOAD_TTL_DAYS:-7}"
       HISTORY_TTL_DAYS: "${HISTORY_TTL_DAYS:-90}"
       PREVIEW_DPI: "110"
+      OFFICE_ENABLED: "${OFFICE_ENABLED:-true}"
+      OFFICE_TIMEOUT_SECONDS: "${OFFICE_TIMEOUT_SECONDS:-90}"
+      OFFICE_MAX_PAGES: "${OFFICE_MAX_PAGES:-500}"
+      OFFICE_MEMORY_MB: "${OFFICE_MEMORY_MB:-1536}"
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
     volumes:
       - /run/cups:/run/cups

@@ -68,6 +68,8 @@ class PrintOptions(BaseModel):
 
 
 class PrintRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    strict_options: bool = True
     file_id: str
     options: PrintOptions = Field(default_factory=PrintOptions)
 
