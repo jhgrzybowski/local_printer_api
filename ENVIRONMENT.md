@@ -165,10 +165,19 @@ See `DEPLOYMENT_DOCKER.md` for the full container workflow.
 | --- | --- | --- |
 | `INSTALL_OFFICE` | `true` | Docker build argument; install LibreOffice and fonts. |
 | `OFFICE_ENABLED` | `true` | Enable conversion when runtime dependencies are available. |
-| `OFFICE_TIMEOUT_SECONDS` | `90` | Wall-clock and CPU limit for a conversion. |
+| `OFFICE_TIMEOUT_SECONDS` | `90` | Wall-clock conversion timeout; the worker also has a separate CPU-time limit derived from this value. |
 | `OFFICE_MEMORY_MB` | `1536` | Per-process virtual address-space limit. |
 | `OFFICE_MAX_PAGES` | `500` | Maximum pages in the generated PDF. |
+| `MAX_IMAGE_PIXELS` | `30000000` | Maximum decoded pixel count for PNG/JPEG upload and preview. |
 
-All numeric limits must be positive. `/capabilities` reports effective runtime
-availability and upload/page/time limits. Changes to conversion settings require
-a backend restart. See [Office integration](OFFICE_AND_APP_INTEGRATION.md).
+`OFFICE_TIMEOUT_SECONDS` sets the parent process wall-clock wait. The conversion
+worker receives the same value as its soft `RLIMIT_CPU` budget in CPU-seconds;
+its hard CPU limit is that value multiplied by the detected logical CPU count,
+plus one second. These are separate wall-clock and CPU-time limits.
+
+PDF previews have a 30-second render timeout and a 1600-pixel maximum dimension.
+`PREVIEW_DPI` controls their resolution. All numeric limits must be positive.
+`/capabilities` reports effective Office, upload, image, and preview limits.
+Office format availability is detected with `dpkg-query`, matching the Ubuntu
+deployment image. Changes to conversion settings require a backend restart. See
+[Office integration](OFFICE_AND_APP_INTEGRATION.md).

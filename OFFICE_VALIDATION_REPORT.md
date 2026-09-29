@@ -1,5 +1,10 @@
 # Office pipeline validation — 2026-09-28–29
 
+> Point-in-time report. The initial validation below used image
+> sha256:b8fca187, which predates the final PR #31 fixes. A subsequent rebuild
+> of PR #31 commit 7426410 is recorded separately below. Neither snapshot
+> validates commits added after 7426410.
+
 ## Scope and implementation
 
 Branch: `codex/office-document-pipeline`, based on merged master `e733e5b`.
@@ -28,7 +33,8 @@ These advertisements do not validate every combination on physical media.
 
 ## Verification
 
-Deployed image: `sha256:b8fca18734e310d6ef0ec98237bfe4df7009d80fa8b3cce29bcaeb5162e928a7`.
+Initial validation image (before the final PR #31 fixes):
+`sha256:b8fca18734e310d6ef0ec98237bfe4df7009d80fa8b3cce29bcaeb5162e928a7`.
 
 - Existing host-environment suite: 164 passed before adding the Office tests.
 - First isolated Office run: 40 passed, including real conversions and PNG rendering for all six formats.
@@ -49,7 +55,8 @@ XLSX conversion excludes a hidden sheet and cells outside its saved print area.
 
 ## Live deployment verification — September 29
 
-The main backend is running the image above, healthy, bound to
+During the original live verification, the main backend was running the image
+above, healthy, bound to
 `192.168.100.99:8000`, with both original persistent volumes. `/capabilities`
 reports all six Office formats available. The application source and OpenAPI
 inside this image were compared with the repository and matched.
@@ -68,6 +75,19 @@ under the normal retention policy for user `office_smoke_4d2a7b06af`.
 The previous image is still available for rollback:
 `sha256:a4d1a012c3f3dbdbe421842ddf5f84956843aaf38e959e6d617f0e6599cb0022`.
 No queue reconfiguration or host package installation was performed.
+
+## Rebuild verification after the original report — September 29
+
+Commit `7426410` was rebuilt as image
+`sha256:39b9d1471f18ef5d37fb6de3fbfa6560fa143d65f8f959bd6d5064a8edad96d6`.
+The existing temporary-file and database volumes were retained, and the
+container was healthy. The source copies of the Office modules and OpenAPI
+specification matched that worktree.
+
+The rebuilt API reported all six Office formats in about 20 ms. DOCX and XLSX
+smoke uploads passed; a normal long DOCX filename converted; and the ODF object
+directory and oversized XML checks returned 415 as expected. This validates
+PR #31 at commit 7426410 only, not the stacked follow-up changes.
 
 ## Readiness assessment and remaining limits
 
