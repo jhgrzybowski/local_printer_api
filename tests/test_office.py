@@ -25,6 +25,22 @@ from tests.test_files_api import make_pdf
 from tests.test_print_api import FakeCupsClient
 
 
+def _odt_variant(tmp_path, *, content_xml=None, manifest_xml=None, extra_entries=None):
+    with ZipFile(BytesIO(office_document('odt'))) as archive:
+        entries = {item.filename: archive.read(item.filename) for item in archive.infolist()}
+    if content_xml is not None:
+        entries['content.xml'] = content_xml
+    if manifest_xml is not None:
+        entries['META-INF/manifest.xml'] = manifest_xml
+    entries.update(extra_entries or {})
+
+    source = tmp_path / 'variant.odt'
+    with ZipFile(source, 'w') as archive:
+        for name, data in entries.items():
+            archive.writestr(name, data)
+    return source
+
+
 @pytest.mark.parametrize('extension', OFFICE_FORMATS)
 def test_inspection_matches_content(tmp_path, extension):
     source = tmp_path / 'upload'
@@ -53,14 +69,60 @@ def test_unsafe_documents_rejected(tmp_path, name, content):
         inspect_office(source, 'file.docx')
 
 
-@pytest.mark.parametrize('object_directory', ['Object 2', 'Object 17'])
-def test_odf_embedded_object_directories_rejected(tmp_path,object_directory):
-    buffer=BytesIO(office_document('odt'))
-    with ZipFile(buffer,'a') as archive:
-        archive.writestr(f'{object_directory}/content.xml','<object/>')
-    source=tmp_path/'file.odt';source.write_bytes(buffer.getvalue())
-    with pytest.raises(OfficeFormatError,match='embedded objects'):
-        inspect_office(source,source.name)
+@pytest.mark.parametrize('directory', ['Object 2', 'ObjectCustom', 'Objectives', 'Chart1', 'Embeds'])
+def test_odf_unreferenced_object_named_directories_are_allowed(tmp_path, directory):
+    source = _odt_variant(tmp_path, extra_entries={f'{directory}/notes.xml': b'<notes/>'})
+
+    assert inspect_office(source, source.name) == 'odt'
+
+
+@pytest.mark.parametrize(('object_element', 'member'), [
+    ('<draw:object xlink:href="./ObjectCustom/"/>', 'ObjectCustom/content.xml'),
+    ('<draw:object xlink:href="./Chart1/"/>', 'Chart1/content.xml'),
+    ('<draw:object-ole xlink:href="./Embeds/object.bin"/>', 'Embeds/object.bin'),
+])
+def test_odf_draw_object_relationships_are_rejected(tmp_path, object_element, member):
+    with ZipFile(BytesIO(office_document('odt'))) as archive:
+        content_xml = archive.read('content.xml')
+    content_xml = content_xml.replace(
+        b'xmlns:office=',
+        b'xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:office=',
+    ).replace(
+        b'</office:text>',
+        f'<text:p>{object_element}</text:p></office:text>'.encode(),
+    )
+    source = _odt_variant(
+        tmp_path,
+        content_xml=content_xml,
+        extra_entries={member: b'<embedded/>' if member.endswith('.xml') else b'ole data'},
+    )
+
+    with pytest.raises(OfficeFormatError, match='embedded objects'):
+        inspect_office(source, source.name)
+
+
+@pytest.mark.parametrize('media_type', [
+    'application/vnd.sun.star.oleobject',
+    'application/vnd.oasis.opendocument.spreadsheet',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.ms-excel',
+])
+def test_odf_manifest_embedded_package_types_are_rejected(tmp_path, media_type):
+    with ZipFile(BytesIO(office_document('odt'))) as archive:
+        manifest_xml = archive.read('META-INF/manifest.xml')
+    nested_entry = (
+        f'<manifest:file-entry manifest:full-path="Embeds/object" '
+        f'manifest:media-type="{media_type}"/>'
+    ).encode()
+    manifest_xml = manifest_xml.replace(b'</manifest:manifest>', nested_entry + b'</manifest:manifest>')
+    source = _odt_variant(
+        tmp_path,
+        manifest_xml=manifest_xml,
+        extra_entries={'Embeds/object': b'nested package'},
+    )
+
+    with pytest.raises(OfficeFormatError, match='embedded objects'):
+        inspect_office(source, source.name)
 
 
 @pytest.mark.parametrize('directory', ['ObjectCustom', 'Objectives'])

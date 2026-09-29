@@ -28,11 +28,44 @@ OFFICE_COMPONENTS = {
 MAX_EXPANDED_BYTES = 100 * 1024 * 1024
 MAX_MEMBERS = 2000
 MAX_XML_BYTES = 4 * 1024 * 1024
-ODF_EMBEDDED_OBJECT_DIR = re.compile(r"^object\s+\d+$", re.IGNORECASE)
+ODF_DRAWING_NS = "urn:oasis:names:tc:opendocument:xmlns:drawing:1.0"
+ODF_MANIFEST_NS = "urn:oasis:names:tc:opendocument:xmlns:manifest:1.0"
+ODF_EMBEDDED_OBJECT_TAGS = {
+    f"{{{ODF_DRAWING_NS}}}object",
+    f"{{{ODF_DRAWING_NS}}}object-ole",
+}
+ODF_EMBEDDED_PACKAGE_MIME_PREFIXES = (
+    "application/vnd.oasis.opendocument.",
+    "application/vnd.openxmlformats-officedocument.",
+    "application/vnd.ms-word.",
+    "application/vnd.ms-excel",
+    "application/vnd.ms-powerpoint",
+)
+ODF_EMBEDDED_PACKAGE_MIME_TYPES = {
+    "application/vnd.sun.star.oleobject",
+    "application/msword",
+    *(values[0] for values in OFFICE_FORMATS.values()),
+}
 
 
 class OfficeFormatError(ValueError):
     pass
+
+
+def _contains_odf_embedded_object(root: ET.Element) -> bool:
+    manifest_full_path = f"{{{ODF_MANIFEST_NS}}}full-path"
+    manifest_media_type = f"{{{ODF_MANIFEST_NS}}}media-type"
+    for node in root.iter():
+        if node.tag in ODF_EMBEDDED_OBJECT_TAGS:
+            return True
+        if node.tag != f"{{{ODF_MANIFEST_NS}}}file-entry":
+            continue
+        if node.attrib.get(manifest_full_path, "") in {"", "/"}:
+            continue
+        media_type = node.attrib.get(manifest_media_type, "").lower()
+        if media_type in ODF_EMBEDDED_PACKAGE_MIME_TYPES or media_type.startswith(ODF_EMBEDDED_PACKAGE_MIME_PREFIXES):
+            return True
+    return False
 
 
 def inspect_office(path: Path, filename: str) -> str | None:
@@ -70,10 +103,6 @@ def inspect_office(path: Path, filename: str) -> str | None:
                 lower = name.lower()
                 if any(token in lower for token in ("vbaproject", "scripts/", "basic/", "embeddings/", "externallinks/", "activex/", "objectreplacements/")):
                     raise OfficeFormatError("Macros, embedded objects, and external data links are not supported")
-                if extension.startswith("od"):
-                    directory_parts = parts if entry.is_dir() else parts[:-1]
-                    if any(ODF_EMBEDDED_OBJECT_DIR.fullmatch(part) for part in directory_parts):
-                        raise OfficeFormatError("Macros, embedded objects, and external data links are not supported")
                 if lower.endswith((".xml", ".rels")):
                     if entry.file_size > MAX_XML_BYTES:
                         raise OfficeFormatError("Office XML part exceeds size limit")
@@ -81,6 +110,8 @@ def inspect_office(path: Path, filename: str) -> str | None:
                     if b"<!DOCTYPE" in data.replace(b"\x00", b"").upper() or b"<!ENTITY" in data.replace(b"\x00", b"").upper():
                         raise OfficeFormatError("XML document types and entities are not supported")
                     root = ET.fromstring(data)
+                    if extension.startswith("od") and _contains_odf_embedded_object(root):
+                        raise OfficeFormatError("Macros, embedded objects, and external data links are not supported")
                     fields = "".join((node.text or "") for node in root.iter() if node.tag.endswith("}instrText"))
                     fields += " ".join(value for node in root.iter() for key, value in node.attrib.items() if key.endswith("}instr"))
                     if re.search(r"\b(?:DDEAUTO|DDE|INCLUDETEXT|INCLUDEPICTURE|DATABASE|LINK)\b", fields, re.IGNORECASE):
