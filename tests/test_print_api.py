@@ -273,6 +273,36 @@ def test_print_pdf_with_mocked_cups(client: TestClient) -> None:
     assert any("page order" in warning for warning in body["warnings"])
 
 
+def test_print_validation_respects_non_strict_missing_capabilities(
+    client: TestClient,
+) -> None:
+    class NoOptionCapabilities(FakeCupsClient):
+        def get_option_capabilities(self) -> dict[str, set[str]]:
+            return {}
+
+    cups = NoOptionCapabilities()
+    app.dependency_overrides[get_cups_client] = lambda: cups
+    file_id = upload_pdf(client)
+    request = {"file_id": file_id, "options": {"paper_size": "A4"}}
+
+    strict = client.post("/print/validate", json=request)
+    assert strict.status_code == 503
+    assert cups.submissions == []
+
+    relaxed_request = {**request, "strict_options": False}
+    validation = client.post("/print/validate", json=relaxed_request)
+    assert validation.status_code == 200
+    assert validation.json()["ready_for_print"] is True
+    assert validation.json()["valid"] is True
+    assert validation.json()["unsupported_options"] == []
+    assert validation.json()["applied_options"]["PageSize"] == "A4"
+
+    printed = client.post("/print", json=relaxed_request)
+    assert printed.status_code == 200
+    assert len(cups.submissions) == 1
+    assert printed.json()["applied_options"] == validation.json()["applied_options"]
+
+
 def test_concurrent_page_ranges_spool_their_own_pdf(storage: TempFileStorage) -> None:
     record = StoredFile("test-file-id-12345", "print.pdf", "application/pdf", 0, 2, True)
     storage.files_dir.mkdir(parents=True)

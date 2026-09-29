@@ -504,7 +504,7 @@ def validate_print(request: PrintRequest, current_user: User = Depends(require_c
             prepared = prepare_print_file(storage, record, request.options)
             try:
                 capabilities = client.get_option_capabilities()
-                if not capabilities:
+                if not capabilities and request.strict_options:
                     raise PrintRequestError("Printer capabilities are unavailable; cannot validate options", 503)
                 mapped = request.options.to_cups_options(capabilities)
                 status = translate_queue_status(client.get_queue())
