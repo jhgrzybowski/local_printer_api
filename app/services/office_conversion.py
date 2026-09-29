@@ -10,7 +10,7 @@ import subprocess
 import sys
 import tempfile
 
-from app.services.office_formats import OFFICE_FORMATS
+from app.services.office_formats import OFFICE_COMPONENTS, OFFICE_FORMATS
 from app.services.pdf_metadata import PdfMetadataError, get_pdf_page_count
 
 
@@ -36,6 +36,34 @@ class OfficeConverter:
         if ctypes.util.find_library("seccomp") is None:
             return None
         return shutil.which("libreoffice") or shutil.which("soffice")
+
+    def format_availability(self) -> dict[str, bool]:
+        if not self.executable():
+            return {extension: False for extension in OFFICE_FORMATS}
+
+        dpkg_query = shutil.which("dpkg-query")
+        if not dpkg_query:
+            return {extension: False for extension in OFFICE_FORMATS}
+
+        installed_components: set[str] = set()
+        for component in set(OFFICE_COMPONENTS.values()):
+            try:
+                result = subprocess.run(
+                    [dpkg_query, "-W", "-f=${db:Status-Status}", f"libreoffice-{component}"],
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                    check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+            if result.returncode == 0 and result.stdout.strip() == "installed":
+                installed_components.add(component)
+
+        return {
+            extension: OFFICE_COMPONENTS[extension] in installed_components
+            for extension in OFFICE_FORMATS
+        }
 
     def convert(self, source: Path, extension: str, destination: Path) -> int:
         executable = self.executable()

@@ -449,11 +449,12 @@ async def upload_file(
 @app.get("/capabilities")
 def capabilities(storage: TempFileStorage = Depends(get_file_storage)) -> dict[str, object]:
     converter = OfficeConverter(storage.root / "conversion-work")
-    available = converter.executable() is not None
+    office_formats = converter.format_availability()
+    available = any(office_formats.values())
     return {
         "native_mime_types": sorted(SUPPORTED_MIME_TYPES),
         "office": {"available": available, "formats": [
-            {"extension": extension, "mime_type": values[0], "available": available}
+            {"extension": extension, "mime_type": values[0], "available": office_formats[extension]}
             for extension, values in OFFICE_FORMATS.items()
         ], "timeout_seconds": converter.timeout, "max_pages": converter.max_pages,
             "spreadsheet_layout": "saved-print-settings", "max_concurrent_conversions": 1},

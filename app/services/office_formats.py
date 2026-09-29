@@ -15,6 +15,16 @@ OFFICE_FORMATS = {
     "ods": ("application/vnd.oasis.opendocument.spreadsheet", "content.xml", "calc_pdf_Export"),
     "odp": ("application/vnd.oasis.opendocument.presentation", "content.xml", "impress_pdf_Export"),
 }
+
+# LibreOffice installs these document filters with their application component.
+OFFICE_COMPONENTS = {
+    "docx": "writer",
+    "odt": "writer",
+    "xlsx": "calc",
+    "ods": "calc",
+    "pptx": "impress",
+    "odp": "impress",
+}
 MAX_EXPANDED_BYTES = 100 * 1024 * 1024
 MAX_MEMBERS = 2000
 

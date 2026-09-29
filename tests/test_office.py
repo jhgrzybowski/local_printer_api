@@ -137,10 +137,30 @@ def test_conversion_failure_cleans_upload(office_client,monkeypatch,status):
 
 def test_capabilities_tracks_runtime(office_client, monkeypatch):
     client,_,_,_=office_client
-    monkeypatch.setattr(OfficeConverter,'executable',lambda _:None)
+    monkeypatch.setattr(OfficeConverter,'format_availability',lambda _:{extension:False for extension in OFFICE_FORMATS})
     assert client.get('/capabilities').json()['office']['available'] is False
-    monkeypatch.setattr(OfficeConverter,'executable',lambda _:'/usr/bin/libreoffice')
-    assert client.get('/capabilities').json()['office']['available'] is True
+    monkeypatch.setattr(OfficeConverter,'format_availability',lambda _:{extension:extension in {'docx','odt'} for extension in OFFICE_FORMATS})
+    response=client.get('/capabilities').json()['office']
+    assert response['available'] is True
+    assert {item['extension']:item['available'] for item in response['formats']}=={
+        extension:extension in {'docx','odt'} for extension in OFFICE_FORMATS
+    }
+
+
+def test_format_availability_tracks_installed_components(tmp_path,monkeypatch):
+    converter=OfficeConverter(tmp_path)
+    monkeypatch.setattr(converter,'executable',lambda:'/usr/bin/libreoffice')
+    monkeypatch.setattr('app.services.office_conversion.shutil.which',lambda name:'/usr/bin/dpkg-query' if name=='dpkg-query' else None)
+    component_status={'writer':'installed','calc':'not-installed','impress':'not-installed'}
+    def query(args,**kwargs):
+        component=args[-1].removeprefix('libreoffice-')
+        status=component_status[component]
+        return subprocess.CompletedProcess(args,0 if status=='installed' else 1,status,'')
+    monkeypatch.setattr('app.services.office_conversion.subprocess.run',query)
+
+    assert converter.format_availability()=={
+        'docx':True,'odt':True,'xlsx':False,'ods':False,'pptx':False,'odp':False,
+    }
 
 
 def test_converter_busy_and_missing_runtime(tmp_path,monkeypatch):
