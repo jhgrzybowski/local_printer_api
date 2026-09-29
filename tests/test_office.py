@@ -274,6 +274,8 @@ def test_capabilities_tracks_runtime(office_client, monkeypatch):
     assert {item['extension']:item['available'] for item in response['formats']}=={
         extension:extension in {'docx','odt'} for extension in OFFICE_FORMATS
     }
+    assert response['cpu_time_soft_limit_seconds'] == OfficeConverter(Path('/tmp')).timeout
+    assert response['cpu_time_hard_limit_seconds'] == OfficeConverter(Path('/tmp')).timeout * (os.cpu_count() or 1) + 1
     assert response['address_space_limit_mb'] == OfficeConverter(Path('/tmp')).memory_mb
     assert response['max_output_bytes'] > 0
     assert response['max_archive_members'] > 0

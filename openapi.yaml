@@ -1505,6 +1505,8 @@ components:
           - available
           - formats
           - timeout_seconds
+          - cpu_time_soft_limit_seconds
+          - cpu_time_hard_limit_seconds
           - max_pages
           - address_space_limit_mb
           - max_output_bytes
@@ -1532,6 +1534,10 @@ components:
                   available:
                     type: boolean
             timeout_seconds:
+              type: integer
+            cpu_time_soft_limit_seconds:
+              type: integer
+            cpu_time_hard_limit_seconds:
               type: integer
             max_pages:
               type: integer

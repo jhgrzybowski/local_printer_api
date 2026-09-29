@@ -119,6 +119,7 @@ BACKEND_PORT=8000
 TMP_DIR=/var/tmp/printer-backend
 DB_PATH=/var/lib/local-printer-api/app.db
 MAX_UPLOAD_MB=50
+MAX_IMAGE_PIXELS=30000000
 PREVIEW_DPI=110
 ```
 

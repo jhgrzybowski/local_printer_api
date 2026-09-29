@@ -29,6 +29,8 @@ class OfficeConverter:
         self.timeout = int(os.getenv("OFFICE_TIMEOUT_SECONDS", "90"))
         self.max_pages = int(os.getenv("OFFICE_MAX_PAGES", "500"))
         self.memory_mb = int(os.getenv("OFFICE_MEMORY_MB", "1536"))
+        self.cpu_time_soft_limit_seconds = self.timeout
+        self.cpu_time_hard_limit_seconds = self.timeout * (os.cpu_count() or 1) + 1
         if min(self.timeout, self.max_pages, self.memory_mb) < 1:
             raise ValueError("Office conversion limits must be positive")
 

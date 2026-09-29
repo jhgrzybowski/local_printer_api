@@ -165,7 +165,7 @@ See `DEPLOYMENT_DOCKER.md` for the full container workflow.
 | --- | --- | --- |
 | `INSTALL_OFFICE` | `true` | Docker build argument; install LibreOffice and fonts. |
 | `OFFICE_ENABLED` | `true` | Enable conversion when runtime dependencies are available. |
-| `OFFICE_TIMEOUT_SECONDS` | `90` | Wall-clock conversion timeout; the worker also has a separate CPU-time limit derived from this value. |
+| `OFFICE_TIMEOUT_SECONDS` | `90` | Wall-clock conversion timeout and worker soft CPU-time limit. |
 | `OFFICE_MEMORY_MB` | `1536` | Per-process virtual address-space limit. |
 | `OFFICE_MAX_PAGES` | `500` | Maximum pages in the generated PDF. |
 | `MAX_IMAGE_PIXELS` | `30000000` | Maximum decoded pixel count for PNG/JPEG upload and preview. |
@@ -173,7 +173,8 @@ See `DEPLOYMENT_DOCKER.md` for the full container workflow.
 `OFFICE_TIMEOUT_SECONDS` sets the parent process wall-clock wait. The conversion
 worker receives the same value as its soft `RLIMIT_CPU` budget in CPU-seconds;
 its hard CPU limit is that value multiplied by the detected logical CPU count,
-plus one second. These are separate wall-clock and CPU-time limits.
+plus one second. `/capabilities` exposes both CPU limits as
+`cpu_time_soft_limit_seconds` and `cpu_time_hard_limit_seconds`.
 
 PDF previews have a 30-second render timeout and a 1600-pixel maximum dimension.
 `PREVIEW_DPI` controls their resolution. All numeric limits must be positive.

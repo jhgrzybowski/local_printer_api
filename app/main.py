@@ -468,7 +468,10 @@ def capabilities(storage: TempFileStorage = Depends(get_file_storage)) -> dict[s
         "office": {"available": available, "formats": [
             {"extension": extension, "mime_type": values[0], "available": office_formats[extension]}
             for extension, values in OFFICE_FORMATS.items()
-        ], "timeout_seconds": converter.timeout, "max_pages": converter.max_pages,
+        ], "timeout_seconds": converter.timeout,
+            "cpu_time_soft_limit_seconds": converter.cpu_time_soft_limit_seconds,
+            "cpu_time_hard_limit_seconds": converter.cpu_time_hard_limit_seconds,
+            "max_pages": converter.max_pages,
             "address_space_limit_mb": converter.memory_mb,
             "max_output_bytes": OUTPUT_LIMIT_BYTES,
             "max_archive_members": MAX_MEMBERS,
