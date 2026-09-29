@@ -199,6 +199,8 @@ def test_storage_sanitizes_filenames() -> None:
     assert sanitize_filename(r"..\..\nested\file.jpg") == "file.jpg"
     assert sanitize_filename("-" * 200 + ".docx") == "upload.docx"
     assert sanitize_filename("---.docx") == "upload.docx"
+    assert sanitize_filename(".docx") == "upload.docx"
+    assert sanitize_filename("....docx") == "upload.docx"
 
 
 def test_image_upload_rejects_pixel_limit(

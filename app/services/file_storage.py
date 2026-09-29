@@ -27,6 +27,7 @@ from app.settings import MAX_IMAGE_PIXELS, MAX_UPLOAD_MB, TMP_DIR
 
 FILE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{16,80}$")
 CHUNK_SIZE = 1024 * 1024
+KNOWN_UPLOAD_EXTENSIONS = {"pdf", "png", "jpg", "jpeg", "txt", *OFFICE_FORMATS}
 
 
 class StorageError(ValueError):
@@ -460,8 +461,11 @@ class TempFileStorage:
 def sanitize_filename(filename: str | None) -> str:
     name = (filename or "upload").replace("\\", "/").rsplit("/", 1)[-1].strip()
     name = re.sub(r"[^A-Za-z0-9._-]+", "_", name)
-    name = name.lstrip(".")
     suffix = Path(name).suffix
+    if not suffix and name.startswith("."):
+        possible_extension = name.rsplit(".", 1)[-1].lower()
+        if possible_extension in KNOWN_UPLOAD_EXTENSIONS:
+            suffix = f".{possible_extension}"
     stem = name[:-len(suffix)] if suffix else name
     stem = stem.strip("._-")
     suffix = suffix if suffix not in {".", ".."} else ""

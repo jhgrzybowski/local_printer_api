@@ -175,6 +175,20 @@ def office_client(tmp_path, monkeypatch):
         app.dependency_overrides.clear()
 
 
+@pytest.mark.parametrize('filename', ['.docx', '....docx'])
+def test_office_dot_only_filename_preserves_format_for_upload(office_client, filename):
+    client, _, _, calls = office_client
+
+    response = client.post(
+        '/files',
+        files={'file': (filename, office_document('docx'), 'application/octet-stream')},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()['original_filename'] == 'upload.docx'
+    assert calls == ['docx']
+
+
 @pytest.mark.parametrize('extension', OFFICE_FORMATS)
 def test_office_api_reuses_pdf_for_preview_and_print(office_client, extension, monkeypatch):
     client, storage, cups, calls=office_client
