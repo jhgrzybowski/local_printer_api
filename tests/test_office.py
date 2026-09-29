@@ -293,6 +293,7 @@ def test_openapi_documents_runtime_paths_and_required_fields(office_client):
     spec=client.get('/openapi.json').json()
     for path in ['/capabilities','/files/{file_id}','/files/{file_id}/pdf','/print/validate']:
         assert path in spec['paths']
+    assert '504' in spec['paths']['/files/{file_id}/preview/{page}']['get']['responses']
     schemas=spec['components']['schemas']
     assert schemas['PrintRequest']['properties']['strict_options']['default'] is True
     assert set(schemas['CapabilitiesResponse']['required'])<=set(client.get('/capabilities').json())
