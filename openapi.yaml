@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Local Printer API
-  version: 0.1.0
+  version: 0.2.0
   description: >
     REST API for managing uploads, previews, print submission, printer status,
     printer options, and CUPS jobs through a local CUPS queue.
@@ -170,51 +170,210 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /capabilities:
+    get:
+      tags:
+      - Files
+      summary: Discover file types and conversion limits
+      operationId: getCapabilities
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CapabilitiesResponse'
+  /files/{file_id}:
+    get:
+      tags:
+      - Files
+      summary: Retrieve metadata for an owned upload
+      operationId: getFile
+      security: &id001
+      - SessionCookieAuth: []
+      parameters:
+      - &id002
+        name: file_id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FileUploadResponse'
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: File missing or not owned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /files/{file_id}/pdf:
+    get:
+      tags:
+      - Files
+      summary: Download the PDF used by preview and printing
+      operationId: getFilePdf
+      security: *id001
+      parameters:
+      - *id002
+      responses:
+        '200':
+          description: Stored printable PDF
+          content:
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+        '400':
+          description: Upload has no PDF representation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: File missing or not owned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /print/validate:
+    post:
+      tags:
+      - Print
+      summary: Validate a print request without submitting it
+      description: Uses the same PDF page selection and option mapper as /print. valid means all requested options
+        are supported. ready_for_print is a separate live queue snapshot. /print rechecks readiness and options; validation
+        does not reserve the queue.
+      operationId: validatePrint
+      security: *id001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PrintRequest'
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PrintValidationResponse'
+        '400':
+          description: Invalid page range
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: File missing or not owned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: CUPS unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /files:
     post:
-      tags: [Files]
+      tags:
+      - Files
       summary: Upload a file for previewing or printing
       operationId: uploadFile
       security:
-        - SessionCookieAuth: []
+      - SessionCookieAuth: []
       requestBody:
         required: true
         content:
           multipart/form-data:
             schema:
               type: object
-              required: [file]
+              required:
+              - file
               properties:
                 file:
                   type: string
                   format: binary
       responses:
-        "200":
+        '200':
           description: File accepted and stored
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/FileUploadResponse"
-        "401":
-          $ref: "#/components/responses/AuthenticationRequired"
-        "400":
+                $ref: '#/components/schemas/FileUploadResponse'
+        '401':
+          $ref: '#/components/responses/AuthenticationRequired'
+        '400':
           description: Invalid or corrupt file
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "413":
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
           description: File too large
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "415":
+                $ref: '#/components/schemas/ErrorResponse'
+        '415':
           description: Unsupported media type
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ErrorResponse"
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Document conversion failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Office converter unavailable or busy; retry upload later
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '504':
+          description: Office conversion timed out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      description: Office files are validated and converted synchronously before success. The returned page count,
+        PDF, previews, and print source refer to one stored PDF. See /capabilities for runtime availability. Native
+        PDF/image/text uploads remain supported.
 
   /files/{file_id}/preview:
     get:
@@ -282,50 +441,60 @@ paths:
 
   /print:
     post:
-      tags: [Print]
+      tags:
+      - Print
       summary: Submit an uploaded file to CUPS
       operationId: submitPrintJob
       security:
-        - SessionCookieAuth: []
+      - SessionCookieAuth: []
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/PrintRequest"
+              $ref: '#/components/schemas/PrintRequest'
       responses:
-        "200":
+        '200':
           description: Print job submitted
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/PrintResponse"
-        "401":
-          $ref: "#/components/responses/AuthenticationRequired"
-        "400":
+                $ref: '#/components/schemas/PrintResponse'
+        '401':
+          $ref: '#/components/responses/AuthenticationRequired'
+        '400':
           description: Invalid print request or invalid page range
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "404":
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
           description: Unknown file ID or file owned by another user
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "409":
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
           description: Printer or queue state prevents printing
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "503":
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
           description: CUPS unavailable or printer queue unavailable
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ErrorResponse"
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Invalid request or unsupported print options
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      description: Unsupported options are rejected before submission by default. Set strict_options=false only to
+        opt into warning-and-drop behavior. Unspecified options inherit CUPS defaults. After an ambiguous network
+        failure, inspect history before retrying; requests are not idempotent.
 
   /jobs:
     get:
@@ -899,11 +1068,16 @@ components:
     FileUploadResponse:
       type: object
       required:
-        - file_id
-        - original_filename
-        - detected_mime
-        - size_bytes
-        - preview_available
+      - file_id
+      - original_filename
+      - detected_mime
+      - size_bytes
+      - preview_available
+      - converted
+      - printable_mime
+      - printable_sha256
+      - pdf_url
+      - warnings
       properties:
         file_id:
           type: string
@@ -919,11 +1093,30 @@ components:
           minimum: 0
         page_count:
           type:
-            - integer
-            - "null"
+          - integer
+          - 'null'
           minimum: 1
         preview_available:
           type: boolean
+        converted:
+          type: boolean
+          description: True when Office input was converted once to PDF
+        printable_mime:
+          type: string
+        printable_sha256:
+          type:
+          - string
+          - 'null'
+          description: SHA-256 of stored printable bytes; null for legacy uploads
+        pdf_url:
+          type:
+          - string
+          - 'null'
+          description: Authenticated URL for the stored PDF, or null
+        warnings:
+          type: array
+          items:
+            type: string
 
     PreviewPage:
       type: object
@@ -1011,12 +1204,18 @@ components:
 
     PrintRequest:
       type: object
-      required: [file_id]
+      required:
+      - file_id
       properties:
         file_id:
           type: string
         options:
-          $ref: "#/components/schemas/PrintOptions"
+          $ref: '#/components/schemas/PrintOptions'
+        strict_options:
+          type: boolean
+          default: true
+          description: Reject unsupported options instead of dropping them
+      additionalProperties: false
 
     PrintResponse:
       type: object
@@ -1278,3 +1477,105 @@ components:
               items:
                 type: object
                 additionalProperties: true
+
+    CapabilitiesResponse:
+      type: object
+      required:
+      - native_mime_types
+      - office
+      - max_upload_bytes
+      - strict_print_options_default
+      - print_validation_url
+      properties:
+        native_mime_types:
+          type: array
+          items:
+            type: string
+        office:
+          type: object
+          required:
+          - available
+          - formats
+          - timeout_seconds
+          - max_pages
+          - spreadsheet_layout
+          - max_concurrent_conversions
+          properties:
+            available:
+              type: boolean
+            formats:
+              type: array
+              items:
+                type: object
+                required:
+                - extension
+                - mime_type
+                - available
+                properties:
+                  extension:
+                    type: string
+                  mime_type:
+                    type: string
+                  available:
+                    type: boolean
+            timeout_seconds:
+              type: integer
+            max_pages:
+              type: integer
+            spreadsheet_layout:
+              type: string
+              const: saved-print-settings
+            max_concurrent_conversions:
+              type: integer
+              const: 1
+        max_upload_bytes:
+          type: integer
+        strict_print_options_default:
+          type: boolean
+        print_validation_url:
+          type: string
+    PrintValidationResponse:
+      type: object
+      required:
+      - file_id
+      - ready_for_print
+      - valid
+      - page_count
+      - selected_pages
+      - applied_options
+      - unsupported_options
+      - warnings
+      - printable_sha256
+      properties:
+        file_id:
+          type: string
+        ready_for_print:
+          type: boolean
+        valid:
+          type: boolean
+        page_count:
+          type:
+          - integer
+          - 'null'
+        selected_pages:
+          type:
+          - array
+          - 'null'
+          items:
+            type: integer
+        applied_options:
+          type: object
+          additionalProperties:
+            type: string
+        unsupported_options:
+          type: array
+          items:
+            type: string
+        warnings:
+          type: array
+          items:
+            type: string
+        printable_sha256:
+          type:
+          - string
+          - 'null'

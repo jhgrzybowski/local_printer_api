@@ -35,8 +35,11 @@ from app.services.database import Database, JobClaim, User
 from app.services.file_storage import StoredFile, StorageError, TempFileStorage
 from app.services.maintenance import INTERVAL_SECONDS, maybe_run_maintenance
 from app.services.options_summary import build_options_summary
+from app.services.office_conversion import OfficeConverter
+from app.services.office_formats import OFFICE_FORMATS
+from app.services.mime_detection import SUPPORTED_MIME_TYPES
 from app.services.preview import PreviewError, PreviewService
-from app.services.print_service import PrintRequestError, submit_print_job
+from app.services.print_service import PrintRequestError, prepare_print_file, submit_print_job
 from app.services.status_translator import translate_error_status, translate_queue_status
 from app.settings import (
     CORS_ALLOWED_ORIGINS,
@@ -254,7 +257,7 @@ def submit_and_record_print(
     record: StoredFile,
 ) -> dict[str, object]:
     """Hold the source lease through job ownership persistence."""
-    result = submit_print_job(client, storage, record, request.options)
+    result = submit_print_job(client, storage, record, request.options, strict_options=request.strict_options)
     submitted_job = None
     try:
         submitted_job = client.get_job(int(result["job_id"]))
@@ -442,6 +445,86 @@ async def upload_file(
     return file_response(record)
 
 
+
+@app.get("/capabilities")
+def capabilities(storage: TempFileStorage = Depends(get_file_storage)) -> dict[str, object]:
+    converter = OfficeConverter(storage.root / "conversion-work")
+    available = converter.executable() is not None
+    return {
+        "native_mime_types": sorted(SUPPORTED_MIME_TYPES),
+        "office": {"available": available, "formats": [
+            {"extension": extension, "mime_type": values[0], "available": available}
+            for extension, values in OFFICE_FORMATS.items()
+        ], "timeout_seconds": converter.timeout, "max_pages": converter.max_pages,
+            "spreadsheet_layout": "saved-print-settings", "max_concurrent_conversions": 1},
+        "max_upload_bytes": storage.max_upload_mb * 1024 * 1024,
+        "strict_print_options_default": True,
+        "print_validation_url": "/print/validate",
+    }
+
+
+@app.get("/files/{file_id}")
+def get_file(file_id: str, current_user: User = Depends(require_current_user),
+             storage: TempFileStorage = Depends(get_file_storage)) -> dict[str, object]:
+    record = get_user_file_record(storage, file_id, current_user)
+    if not storage.printable_path(record).is_file():
+        raise HTTPException(status_code=404, detail="Stored file is missing")
+    return file_response(record)
+
+
+@app.get("/files/{file_id}/pdf")
+def get_file_pdf(file_id: str, current_user: User = Depends(require_current_user),
+                 storage: TempFileStorage = Depends(get_file_storage)) -> FileResponse:
+    record = get_user_file_record(storage, file_id, current_user)
+    if record.printable_mime != "application/pdf":
+        raise HTTPException(status_code=400, detail="This upload has no PDF representation")
+    lease = storage.lease(record.file_id)
+    try:
+        lease.__enter__()
+    except StorageError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    path = storage.printable_path(record)
+    if not path.is_file():
+        lease.__exit__(None, None, None)
+        raise HTTPException(status_code=404, detail="Stored file is missing")
+    return FileResponse(path, media_type="application/pdf",
+                        filename=f"{Path(record.original_filename).stem}.pdf",
+                        headers={"Cache-Control": "private, no-store"},
+                        background=BackgroundTask(lease.__exit__, None, None, None))
+
+
+@app.post("/print/validate")
+def validate_print(request: PrintRequest, current_user: User = Depends(require_current_user),
+                   client: CupsClient = Depends(get_cups_client),
+                   storage: TempFileStorage = Depends(get_file_storage)) -> dict[str, object]:
+    record = get_user_file_record(storage, request.file_id, current_user)
+    try:
+        with storage.lease(record.file_id):
+            prepared = prepare_print_file(storage, record, request.options)
+            try:
+                capabilities = client.get_option_capabilities()
+                if not capabilities:
+                    raise PrintRequestError("Printer capabilities are unavailable; cannot validate options", 503)
+                mapped = request.options.to_cups_options(capabilities)
+                status = translate_queue_status(client.get_queue())
+                return {"file_id": record.file_id, "ready_for_print": status["ready_for_print"],
+                        "valid": not mapped.unsupported_options,
+                        "page_count": record.page_count, "selected_pages": prepared.selected_pages,
+                        "applied_options": mapped.applied_options,
+                        "unsupported_options": mapped.unsupported_options,
+                        "warnings": [*record.warnings, *mapped.warnings,
+                                     *(["Printed pages preserve the user-specified page order"]
+                                       if prepared.selected_pages is not None else [])],
+                        "printable_sha256": record.printable_sha256}
+            finally:
+                if prepared.temporary:
+                    prepared.file_path.unlink(missing_ok=True)
+    except (StorageError, PrintRequestError) as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    except CupsClientError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
 @app.get("/files/{file_id}/preview")
 def list_previews(
     file_id: str,
@@ -549,6 +632,11 @@ def file_response(record: StoredFile) -> dict[str, object]:
         "size_bytes": record.size_bytes,
         "page_count": record.page_count,
         "preview_available": record.preview_available,
+        "converted": record.converted,
+        "printable_mime": record.printable_mime,
+        "printable_sha256": record.printable_sha256,
+        "warnings": list(record.warnings),
+        "pdf_url": f"/files/{record.file_id}/pdf" if record.printable_mime == "application/pdf" else None,
     }
 
 

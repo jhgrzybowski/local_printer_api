@@ -24,7 +24,12 @@ def get_pdf_page_count(path: Path) -> int:
         raise PdfMetadataError("Password-protected PDFs are not supported")
 
     try:
-        return len(reader.pages)
+        page_count = len(reader.pages)
+        if page_count < 1:
+            raise PdfMetadataError("PDF must contain at least one page")
+        return page_count
+    except PdfMetadataError:
+        raise
     except PdfReadError as exc:
         raise PdfMetadataError("Corrupt or unreadable PDF") from exc
     except Exception as exc:

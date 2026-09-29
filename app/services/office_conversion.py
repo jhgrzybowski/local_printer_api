@@ -1,0 +1,101 @@
+from __future__ import annotations
+
+import ctypes.util
+import fcntl
+import os
+from pathlib import Path
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+
+from app.services.office_formats import OFFICE_FORMATS
+from app.services.pdf_metadata import PdfMetadataError, get_pdf_page_count
+
+
+class ConversionError(ValueError):
+    def __init__(self, message: str, status_code: int = 422):
+        super().__init__(message)
+        self.message = message
+        self.status_code = status_code
+
+
+class OfficeConverter:
+    def __init__(self, root: Path):
+        self.root = root
+        self.timeout = int(os.getenv("OFFICE_TIMEOUT_SECONDS", "90"))
+        self.max_pages = int(os.getenv("OFFICE_MAX_PAGES", "500"))
+        self.memory_mb = int(os.getenv("OFFICE_MEMORY_MB", "1536"))
+        if min(self.timeout, self.max_pages, self.memory_mb) < 1:
+            raise ValueError("Office conversion limits must be positive")
+
+    def executable(self) -> str | None:
+        if os.getenv("OFFICE_ENABLED", "true").lower() not in {"1", "true", "yes"}:
+            return None
+        if ctypes.util.find_library("seccomp") is None:
+            return None
+        return shutil.which("libreoffice") or shutil.which("soffice")
+
+    def convert(self, source: Path, extension: str, destination: Path) -> int:
+        executable = self.executable()
+        if not executable:
+            raise ConversionError("Office conversion is unavailable; check /capabilities", 503)
+        self.root.mkdir(parents=True, exist_ok=True)
+        with (self.root / ".office.lock").open("a+b") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise ConversionError("Office converter is busy; retry the upload later", 503) from exc
+            with tempfile.TemporaryDirectory(prefix="office-", dir=self.root) as workspace:
+                work = Path(workspace).resolve()
+                profile = work / "profile" / "user"
+                profile.mkdir(parents=True)
+                (profile / "registrymodifications.xcu").write_text(
+                    '<?xml version="1.0"?><oor:items xmlns:oor="http://openoffice.org/2001/registry">'
+                    '<item oor:path="/org.openoffice.Office.Common/Security/Scripting">'
+                    '<prop oor:name="MacroSecurityLevel" oor:op="fuse"><value>3</value></prop>'
+                    '<prop oor:name="DisableMacrosExecution" oor:op="fuse"><value>true</value></prop>'
+                    '<prop oor:name="BlockUntrustedRefererLinks" oor:op="fuse"><value>true</value></prop>'
+                    '</item></oor:items>', encoding="utf-8")
+                input_path = work / f"document.{extension}"
+                shutil.copyfile(source, input_path)
+                output = work / "output"
+                output.mkdir()
+                filter_name = OFFICE_FORMATS[extension][2]
+                export_options = '{"SinglePageSheets":{"type":"boolean","value":"false"},"ExportHiddenSlides":{"type":"boolean","value":"false"}}'
+                command = [sys.executable, str(Path(__file__).with_name("office_worker.py")),
+                           str(self.memory_mb), str(self.timeout), str(100 * 1024 * 1024), executable,
+                           f"-env:UserInstallation={(work / 'profile').as_uri()}",
+                           "--headless", "--nologo", "--nodefault", "--norestore",
+                           "--convert-to", f"pdf:{filter_name}:{export_options}",
+                           "--outdir", str(output), str(input_path)]
+                environment = {**os.environ, "TMPDIR": str(work), "SAL_USE_VCLPLUGIN": "svp", "LANG": "C.UTF-8", "TZ": "UTC"}
+                try:
+                    process = subprocess.Popen(command, cwd=work, env=environment, start_new_session=True,
+                                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    try:
+                        returncode = process.wait(timeout=self.timeout)
+                    finally:
+                        # Also terminate any helper descendants after an early launcher exit.
+                        try:
+                            os.killpg(process.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                        process.wait()
+                except subprocess.TimeoutExpired as exc:
+                    raise ConversionError("Office conversion exceeded its time limit", 504) from exc
+                except OSError as exc:
+                    raise ConversionError("Office converter could not start", 503) from exc
+                pdf = output / "document.pdf"
+                if returncode != 0 or not pdf.is_file():
+                    raise ConversionError("Office conversion failed; check for corruption, encryption, or unsupported content")
+                try:
+                    pages = get_pdf_page_count(pdf)
+                except PdfMetadataError as exc:
+                    raise ConversionError("Office converter did not produce a readable PDF") from exc
+                if not 1 <= pages <= self.max_pages:
+                    raise ConversionError(f"Converted document must contain 1 to {self.max_pages} pages", 413)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                pdf.replace(destination)
+                return pages

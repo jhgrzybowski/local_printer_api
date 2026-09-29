@@ -102,34 +102,21 @@ Future options:
 
 ---
 
-## 5. Office documents are not included yet
+## 5. Office conversion has explicit limits
 
-Current upload scope:
+Office-enabled builds now accept DOCX, XLSX, PPTX, ODT, ODS, and ODP.
+Each upload is converted once to a stored PDF used for preview and printing.
+LibreOffice conversion has a timeout, resource limits, network restrictions,
+and one active conversion per shared storage directory. `/capabilities` reports
+whether the converter is installed and enabled.
 
-* PDF
-* PNG
-* JPEG
-* plain text
+Layout can differ from Microsoft Office, especially fonts, spreadsheet formulas,
+print areas, and pagination. Review the generated PDF. Legacy DOC/XLS/PPT,
+macro-enabled/encrypted files, embedded objects, and external data links remain
+unsupported. Worksheet selection and spreadsheet layout overrides are future work.
 
-Not yet supported:
-
-* DOCX
-* ODT
-* XLSX
-* PPTX
-
-Reason:
-
-* Office conversion requires LibreOffice.
-* LibreOffice can be slow on low-end servers.
-* Conversion adds more failure modes.
-
-Future option:
-
-* add optional `libreoffice --headless --convert-to pdf`,
-* wrap conversion in timeout,
-* document dependency separately,
-* keep disabled unless system package is installed.
+See [Office and app integration](OFFICE_AND_APP_INTEGRATION.md) for the API contract,
+limits, errors, runtime dependencies, and conversion behavior.
 
 ---
 
@@ -416,6 +403,6 @@ Possible future directions:
 * WebSocket or Server-Sent Events for live job/status updates.
 * Canon HTTP status scraping for ink/errors.
 * Multi-printer support.
-* Optional Office document conversion.
+* Spreadsheet sheet/range selection and layout overrides.
 * Nginx reverse proxy or systemd service deployment.
 * Better frontend accessibility.

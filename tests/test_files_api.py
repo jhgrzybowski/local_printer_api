@@ -140,6 +140,8 @@ def test_pdf_preview_renders_only_requested_page(
     def render_page(source: str, **kwargs: object) -> list[Image.Image]:
         assert Path(source).exists()
         assert kwargs["first_page"] == kwargs["last_page"]
+        assert kwargs["size"] == 1600
+        assert kwargs["timeout"] == 30
         rendered_pages.append(int(kwargs["first_page"]))
         return [Image.new("RGB", (4, 4), color="white")]
 

@@ -52,14 +52,14 @@ def prepare_print_file(
     record: StoredFile,
     options: PrintOptions,
 ) -> PreparedPrint:
-    source = storage.file_path(record.file_id)
+    source = storage.printable_path(record)
     if not source.exists():
         raise PrintRequestError("Stored file is missing", 404)
 
     if not options.pages:
         return PreparedPrint(source, record.original_filename, None)
 
-    if record.detected_mime == "application/pdf":
+    if record.printable_mime == "application/pdf":
         if record.page_count is None:
             raise PrintRequestError("Cannot filter PDF without a known page count", 400)
         filtered = storage.filtered_pdf_path(record.file_id)
@@ -86,12 +86,17 @@ def submit_print_job(
     storage: TempFileStorage,
     record: StoredFile,
     options: PrintOptions,
+    strict_options: bool = True,
 ) -> dict[str, object]:
     ensure_printer_ready(client)
     prepared = prepare_print_file(storage, record, options)
     try:
         capabilities = client.get_option_capabilities()
+        if strict_options and not capabilities:
+            raise PrintRequestError("Printer capabilities are unavailable; cannot validate options", 503)
         mapped = options.to_cups_options(capabilities)
+        if strict_options and mapped.unsupported_options:
+            raise PrintRequestError(f"Unsupported options: {', '.join(mapped.unsupported_options)}", 422)
         title = _safe_title(prepared.title)
         job_id = client.print_file(prepared.file_path, title, mapped.applied_options)
     except CupsClientError as exc:
@@ -100,7 +105,7 @@ def submit_print_job(
         if prepared.temporary:
             prepared.file_path.unlink(missing_ok=True)
 
-    warnings = list(mapped.warnings)
+    warnings = [*record.warnings, *mapped.warnings]
     if prepared.selected_pages is not None:
         warnings.append("Printed pages preserve the user-specified page order")
 

@@ -7,3 +7,5 @@ __pycache__
 *.pyd
 .DS_Store
 printer-backend-data
+
+.test-artifacts

@@ -1,0 +1,5 @@
+ARG TEST_BASE_IMAGE=local-printer-api:office-test
+FROM ${TEST_BASE_IMAGE}
+COPY requirements-dev.txt /tmp/requirements-dev.txt
+RUN pip install --no-cache-dir -r /tmp/requirements-dev.txt
+WORKDIR /workspace

@@ -1,5 +1,7 @@
 FROM python:3.11-slim-bookworm
 
+ARG INSTALL_OFFICE=true
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/usr/lib/python3/dist-packages \
@@ -14,6 +16,9 @@ RUN apt-get update \
         poppler-utils \
         printer-driver-gutenprint \
         python3-cups \
+    && if [ "$INSTALL_OFFICE" = "true" ]; then apt-get install -y --no-install-recommends \
+        libreoffice-writer libreoffice-calc libreoffice-impress libseccomp2 \
+        fonts-liberation fonts-crosextra-carlito fonts-crosextra-caladea; fi \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

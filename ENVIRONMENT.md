@@ -158,3 +158,17 @@ ${BACKEND_HOST:-192.168.100.99}:${BACKEND_PORT:-8000}:8000
 ```
 
 See `DEPLOYMENT_DOCKER.md` for the full container workflow.
+
+## Office conversion settings
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `INSTALL_OFFICE` | `true` | Docker build argument; install LibreOffice and fonts. |
+| `OFFICE_ENABLED` | `true` | Enable conversion when runtime dependencies are available. |
+| `OFFICE_TIMEOUT_SECONDS` | `90` | Wall-clock and CPU limit for a conversion. |
+| `OFFICE_MEMORY_MB` | `1536` | Per-process virtual address-space limit. |
+| `OFFICE_MAX_PAGES` | `500` | Maximum pages in the generated PDF. |
+
+All numeric limits must be positive. `/capabilities` reports effective runtime
+availability and upload/page/time limits. Changes to conversion settings require
+a backend restart. See [Office integration](OFFICE_AND_APP_INTEGRATION.md).
