@@ -62,6 +62,24 @@ def test_odf_embedded_object_directories_rejected(tmp_path,object_directory):
         inspect_office(source,source.name)
 
 
+def test_oversized_xml_member_rejected_before_parsing(tmp_path,monkeypatch):
+    from app.services import office_formats
+    xml_limit=4096
+    monkeypatch.setattr(office_formats,'MAX_XML_BYTES',xml_limit)
+    buffer=BytesIO(office_document('docx'))
+    with ZipFile(buffer,'a') as archive:
+        archive.writestr('word/oversized.xml',b'<root>'+b'x'*(xml_limit+1)+b'</root>')
+    source=tmp_path/'file.docx';source.write_bytes(buffer.getvalue())
+    original_fromstring=office_formats.ET.fromstring
+    def guard_xml_size(data):
+        assert len(data)<=xml_limit
+        return original_fromstring(data)
+    monkeypatch.setattr(office_formats.ET,'fromstring',guard_xml_size)
+
+    with pytest.raises(OfficeFormatError,match='XML part exceeds size limit'):
+        inspect_office(source,source.name)
+
+
 @pytest.fixture
 def office_client(tmp_path, monkeypatch):
     storage = TempFileStorage(tmp_path / 'storage')

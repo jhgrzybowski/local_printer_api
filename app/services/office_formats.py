@@ -27,6 +27,7 @@ OFFICE_COMPONENTS = {
 }
 MAX_EXPANDED_BYTES = 100 * 1024 * 1024
 MAX_MEMBERS = 2000
+MAX_XML_BYTES = 4 * 1024 * 1024
 
 
 class OfficeFormatError(ValueError):
@@ -73,6 +74,8 @@ def inspect_office(path: Path, filename: str) -> str | None:
                     if any(part.lower().startswith("object") for part in directory_parts):
                         raise OfficeFormatError("Macros, embedded objects, and external data links are not supported")
                 if lower.endswith((".xml", ".rels")):
+                    if entry.file_size > MAX_XML_BYTES:
+                        raise OfficeFormatError("Office XML part exceeds size limit")
                     data = archive.read(entry)
                     if b"<!DOCTYPE" in data.replace(b"\x00", b"").upper() or b"<!ENTITY" in data.replace(b"\x00", b"").upper():
                         raise OfficeFormatError("XML document types and entities are not supported")
