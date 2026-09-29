@@ -233,6 +233,31 @@ def test_zero_exit_without_pdf_is_failure(tmp_path,monkeypatch):
         converter.convert(source,'docx',tmp_path/'out.pdf')
 
 
+def test_output_file_limit_returns_413(tmp_path,monkeypatch):
+    from app.services import office_conversion
+    output_limit=1024*1024
+    executable=tmp_path/'fake-office'
+    executable.write_text(
+        f'#!{sys.executable}\n'
+        'from pathlib import Path\n'
+        'import sys\n'
+        'output=Path(sys.argv[sys.argv.index("--outdir")+1]) / "document.pdf"\n'
+        f'output.write_bytes(b"x" * {output_limit + 1})\n'
+    )
+    executable.chmod(0o700)
+    source=tmp_path/'input';source.write_bytes(office_document('docx'))
+    converter=OfficeConverter(tmp_path/'work')
+    monkeypatch.setattr(converter,'executable',lambda:str(executable))
+    monkeypatch.setattr(office_conversion,'OUTPUT_LIMIT_BYTES',output_limit)
+
+    with pytest.raises(ConversionError) as error:
+        converter.convert(source,'docx',tmp_path/'out.pdf')
+    assert error.value.status_code==413
+    assert 'size limit' in error.value.message
+    assert not (tmp_path/'out.pdf').exists()
+    assert not list((tmp_path/'work').glob('office-*'))
+
+
 def test_converted_page_limit(tmp_path,monkeypatch):
     source=tmp_path/'input';source.write_bytes(office_document('docx'))
     template=tmp_path/'template.pdf';template.write_bytes(make_pdf(2))
@@ -294,6 +319,7 @@ def test_openapi_documents_runtime_paths_and_required_fields(office_client):
     for path in ['/capabilities','/files/{file_id}','/files/{file_id}/pdf','/print/validate']:
         assert path in spec['paths']
     assert '504' in spec['paths']['/files/{file_id}/preview/{page}']['get']['responses']
+    assert 'converted output' in spec['paths']['/files']['post']['responses']['413']['description']
     schemas=spec['components']['schemas']
     assert schemas['PrintRequest']['properties']['strict_options']['default'] is True
     assert set(schemas['CapabilitiesResponse']['required'])<=set(client.get('/capabilities').json())

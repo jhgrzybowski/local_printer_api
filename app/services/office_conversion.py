@@ -13,6 +13,8 @@ import tempfile
 from app.services.office_formats import OFFICE_COMPONENTS, OFFICE_FORMATS
 from app.services.pdf_metadata import PdfMetadataError, get_pdf_page_count
 
+OUTPUT_LIMIT_BYTES = 100 * 1024 * 1024
+
 
 class ConversionError(ValueError):
     def __init__(self, message: str, status_code: int = 422):
@@ -93,7 +95,7 @@ class OfficeConverter:
                 filter_name = OFFICE_FORMATS[extension][2]
                 export_options = '{"SinglePageSheets":{"type":"boolean","value":"false"},"ExportHiddenSlides":{"type":"boolean","value":"false"}}'
                 command = [sys.executable, str(Path(__file__).with_name("office_worker.py")),
-                           str(self.memory_mb), str(self.timeout), str(100 * 1024 * 1024), executable,
+                           str(self.memory_mb), str(self.timeout), str(OUTPUT_LIMIT_BYTES), executable,
                            f"-env:UserInstallation={(work / 'profile').as_uri()}",
                            "--headless", "--nologo", "--nodefault", "--norestore",
                            "--convert-to", f"pdf:{filter_name}:{export_options}",
@@ -117,6 +119,9 @@ class OfficeConverter:
                     raise ConversionError("Office converter could not start", 503) from exc
                 pdf = output / "document.pdf"
                 if returncode != 0 or not pdf.is_file():
+                    output_size = pdf.stat().st_size if pdf.is_file() else 0
+                    if returncode == -signal.SIGXFSZ or output_size >= OUTPUT_LIMIT_BYTES:
+                        raise ConversionError("Converted document exceeded its output file size limit", 413)
                     raise ConversionError("Office conversion failed; check for corruption, encryption, or unsupported content")
                 try:
                     pages = get_pdf_page_count(pdf)

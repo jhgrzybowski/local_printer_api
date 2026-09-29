@@ -342,7 +342,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '413':
-          description: File too large
+          description: Uploaded file or converted output exceeds its size limit
           content:
             application/json:
               schema:
