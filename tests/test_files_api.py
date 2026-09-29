@@ -142,6 +142,7 @@ def test_pdf_preview_renders_only_requested_page(
         assert kwargs["first_page"] == kwargs["last_page"]
         assert kwargs["size"] == 1600
         assert kwargs["timeout"] == 30
+        assert kwargs["fmt"] == "ppm"
         rendered_pages.append(int(kwargs["first_page"]))
         return [Image.new("RGB", (4, 4), color="white")]
 
@@ -240,7 +241,7 @@ def test_preview_is_published_only_after_png_write_completes(tmp_path: Path) -> 
     destination = tmp_path / "page-1.png"
 
     class SlowImage:
-        def save(self, path: Path, image_format: str) -> None:
+        def save(self, path: Path, image_format: str, **_: object) -> None:
             assert image_format == "PNG"
             path.write_bytes(b"partial")
             assert not destination.exists()

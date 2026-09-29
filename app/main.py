@@ -333,7 +333,9 @@ def list_jobs(
         raise HTTPException(status_code=400, detail="Invalid job scope")
     try:
         claims = get_user_job_claims(database, current_user)
-        user_jobs = filter_jobs_by_owner(client.list_jobs("all"), claims, client.queue_name)
+        user_jobs = filter_jobs_by_owner(
+            client.list_jobs("all", first_job_id=lowest_job_id(claims)), claims, client.queue_name,
+        )
         jobs_by_scope = {
             "active": [job for job in user_jobs if job["is_active"]],
             "completed": [job for job in user_jobs if job["is_terminal"]],
@@ -736,6 +738,11 @@ def get_user_job_claims(database: Database, current_user: User) -> list[JobClaim
             return []
 
 
+def lowest_job_id(claims: list[JobClaim]) -> int | None:
+    """A CUPS job matches only a claim with its ID, so lower IDs never match."""
+    return min((claim.job_id for claim in claims), default=None)
+
+
 def history_cups_state(job: dict[str, Any] | None) -> str | None:
     state = job.get("state") if job is not None else None
     return state if isinstance(state, str) and state in HISTORY_CUPS_STATES else None
@@ -780,7 +787,7 @@ def refreshed_user_history(
     if not claims:
         return history
     try:
-        jobs = {job["job_id"]: job for job in client.list_jobs("all")}
+        jobs = {job["job_id"]: job for job in client.list_jobs("all", first_job_id=lowest_job_id(claims))}
     except CupsClientError as exc:
         LOGGER.warning("Could not refresh print history from CUPS: %s", exc)
         return history
