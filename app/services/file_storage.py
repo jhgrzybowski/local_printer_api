@@ -22,7 +22,7 @@ from app.services.mime_detection import SUPPORTED_MIME_TYPES, detect_mime
 from app.services.office_conversion import ConversionError, OfficeConverter
 from app.services.office_formats import OfficeFormatError, OFFICE_FORMATS, inspect_office
 from app.services.pdf_metadata import PdfMetadataError, get_pdf_page_count
-from app.settings import MAX_UPLOAD_MB, TMP_DIR
+from app.settings import MAX_IMAGE_PIXELS, MAX_UPLOAD_MB, TMP_DIR
 
 
 FILE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{16,80}$")
@@ -136,7 +136,14 @@ class TempFileStorage:
                     from PIL import Image
                     try:
                         with Image.open(file_path) as image:
+                            if image.width * image.height > MAX_IMAGE_PIXELS:
+                                raise StorageError(
+                                    f"Image exceeds MAX_IMAGE_PIXELS={MAX_IMAGE_PIXELS}",
+                                    413,
+                                )
                             image.verify()
+                    except StorageError:
+                        raise
                     except Exception as exc:
                         raise StorageError("Corrupt or unreadable image", 400) from exc
             printable = self.converted_path(file_id) if converted else file_path
@@ -454,15 +461,18 @@ def sanitize_filename(filename: str | None) -> str:
     name = (filename or "upload").replace("\\", "/").rsplit("/", 1)[-1].strip()
     name = re.sub(r"[^A-Za-z0-9._-]+", "_", name)
     name = name.lstrip(".")
-    if len(name) > 180:
-        suffix = Path(name).suffix
-        if suffix and len(suffix) < 180:
-            stem = name[:-len(suffix)]
-            name = f"{stem[:180 - len(suffix)].rstrip('._-')}{suffix}"
-        else:
-            name = name[:180]
-    name = name.strip("._-")
-    return name or "upload"
+    suffix = Path(name).suffix
+    stem = name[:-len(suffix)] if suffix else name
+    stem = stem.strip("._-")
+    suffix = suffix if suffix not in {".", ".."} else ""
+    if not stem:
+        stem = "upload"
+    if suffix and len(suffix) < 180:
+        stem = stem[:180 - len(suffix)].rstrip("._-") or "upload"
+        name = f"{stem}{suffix}"
+    else:
+        name = f"{stem}{suffix}"[:180].strip("._-") or "upload"
+    return name
 
 
 def is_safe_file_id(file_id: str) -> bool:

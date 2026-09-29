@@ -5,7 +5,10 @@ import tempfile
 from pathlib import Path
 
 from app.services.file_storage import StoredFile, TempFileStorage
-from app.settings import PREVIEW_DPI
+from app.settings import MAX_IMAGE_PIXELS, PREVIEW_DPI
+
+PDF_PREVIEW_TIMEOUT_SECONDS = 30
+PREVIEW_MAX_DIMENSION = 1600
 
 
 class PreviewError(RuntimeError):
@@ -71,7 +74,8 @@ class PreviewService:
 
         try:
             images = convert_from_path(
-                str(source), dpi=self.dpi, fmt="png", first_page=page, last_page=page, timeout=30, size=1600
+                str(source), dpi=self.dpi, fmt="png", first_page=page, last_page=page,
+                timeout=PDF_PREVIEW_TIMEOUT_SECONDS, size=PREVIEW_MAX_DIMENSION,
             )
             if len(images) != 1:
                 raise PreviewError("Unable to render PDF preview page", 400)
@@ -96,10 +100,17 @@ class PreviewService:
 
         try:
             with Image.open(source) as image:
-                image.thumbnail((1600, 1600))
+                if image.width * image.height > MAX_IMAGE_PIXELS:
+                    raise PreviewError(
+                        f"Image exceeds MAX_IMAGE_PIXELS={MAX_IMAGE_PIXELS}",
+                        413,
+                    )
+                image.thumbnail((PREVIEW_MAX_DIMENSION, PREVIEW_MAX_DIMENSION))
                 output = preview_dir / "page-1.png"
                 _save_png_atomic(image.convert("RGB"), output)
                 return output
+        except PreviewError:
+            raise
         except Exception as exc:
             raise PreviewError(f"Unable to generate image preview: {exc}", 400) from exc
 

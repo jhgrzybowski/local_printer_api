@@ -197,6 +197,41 @@ def test_invalid_preview_page_returns_400(file_client: TestClient) -> None:
 def test_storage_sanitizes_filenames() -> None:
     assert sanitize_filename("../../bad name.pdf") == "bad_name.pdf"
     assert sanitize_filename(r"..\..\nested\file.jpg") == "file.jpg"
+    assert sanitize_filename("-" * 200 + ".docx") == "upload.docx"
+    assert sanitize_filename("---.docx") == "upload.docx"
+
+
+def test_image_upload_rejects_pixel_limit(
+    file_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.services import file_storage
+
+    monkeypatch.setattr(file_storage, "MAX_IMAGE_PIXELS", 15)
+    response = file_client.post(
+        "/files",
+        files={"file": ("large.png", make_png(), "image/png")},
+    )
+
+    assert response.status_code == 413
+    assert "MAX_IMAGE_PIXELS" in response.json()["detail"]
+
+
+def test_image_preview_rechecks_pixel_limit(
+    file_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.services import preview
+
+    uploaded = file_client.post(
+        "/files",
+        files={"file": ("image.png", make_png(), "image/png")},
+    )
+    assert uploaded.status_code == 200
+    monkeypatch.setattr(preview, "MAX_IMAGE_PIXELS", 15)
+
+    response = file_client.get(f"/files/{uploaded.json()['file_id']}/preview/1")
+
+    assert response.status_code == 413
+    assert "MAX_IMAGE_PIXELS" in response.json()["detail"]
 
 
 def test_preview_is_published_only_after_png_write_completes(tmp_path: Path) -> None:
