@@ -206,7 +206,10 @@ def test_strict_mode_rejects_unknown_advanced_choices(client: TestClient, cups: 
     assert "StpColorPrecision" not in relaxed.json()["applied_options"]
 
 
-def test_ppd_constraints_block_conflicting_choices(storage: TempFileStorage, isolated_database: Database) -> None:
+@pytest.mark.parametrize("ipp_sides", [False, True])
+def test_ppd_constraints_block_conflicting_choices(
+    storage: TempFileStorage, isolated_database: Database, ipp_sides: bool,
+) -> None:
     constrained = parse_ppd(
         "*OpenUI *Duplex/Two-Sided: PickOne\n*Duplex None/Off: \"\"\n*Duplex DuplexNoTumble/Long: \"\"\n"
         "*CloseUI: *Duplex\n*OpenUI *MediaType/Paper: PickOne\n*MediaType Plain/Plain: \"\"\n"
@@ -215,7 +218,9 @@ def test_ppd_constraints_block_conflicting_choices(storage: TempFileStorage, iso
     )
     class PpdOnly(DialogCupsClient):
         def get_option_capabilities(self) -> dict[str, set[str]]:
-            return constrained.capabilities()
+            # With IPP sides advertised, duplex maps to sides rather than Duplex.
+            extra = {"sides": {"one-sided", "two-sided-long-edge"}} if ipp_sides else {}
+            return {**constrained.capabilities(), **extra}
 
     cups = PpdOnly(constrained)
     app.dependency_overrides.clear()

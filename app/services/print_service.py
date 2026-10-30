@@ -163,8 +163,19 @@ def map_options(
         mode = _driver_high_mode(profile, applied)
         if mode is not None:
             applied["Resolution"] = mode
-    conflicts = profile.ppd.conflicts(applied) if profile.ppd is not None else []
+    conflicts = profile.ppd.conflicts(_ppd_selection(applied)) if profile.ppd is not None else []
     return CupsOptionMapping(applied, unsupported, warnings), conflicts
+
+
+SIDES_TO_DUPLEX = {"one-sided": "None", "two-sided-long-edge": "DuplexNoTumble",
+                   "two-sided-short-edge": "DuplexTumble"}
+
+
+def _ppd_selection(applied: dict[str, str]) -> dict[str, str]:
+    """PPD constraints name Duplex; the job may carry the IPP sides instead."""
+    if "sides" in applied and "Duplex" not in applied and applied["sides"] in SIDES_TO_DUPLEX:
+        return {**applied, "Duplex": SIDES_TO_DUPLEX[applied["sides"]]}
+    return applied
 
 
 def _driver_high_mode(profile: PrinterProfile, applied: dict[str, str]) -> str | None:
