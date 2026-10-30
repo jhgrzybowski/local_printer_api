@@ -95,10 +95,11 @@ Preview is for user convenience and is not guaranteed to match final printer-dri
 `/print/validate` returns a layout plan that follows CUPS rules for pages per
 sheet, scaling, orientation, and two-sided pairing. It was checked against
 pdftopdf output, but it shows each sheet turned so its pages read upright and
-does not model driver margins. On the MG5350 queue, orientation goes through
-Gutenprint's `StpOrientation`, which rotates in the driver, so the plan for an
-explicit orientation is less certain there. Plain-text files have no preview
-because CUPS paginates them.
+does not model driver margins. Orientation uses the standard
+`orientation-requested` attribute that pdftopdf lays out; queues that only
+offer a driver rotation (Gutenprint's `StpOrientation`) rotate after layout, so
+the plan is less certain there. Plain-text files have no preview because CUPS
+paginates them.
 
 Future options:
 
@@ -202,7 +203,7 @@ Known behavior:
 * `collate` is ignored quietly when `copies=1`.
 * `media_type` maps only when safe detected values exist.
 * `fit_to_page` uses `print-scaling=fit` when advertised.
-* orientation may use `StpOrientation` or standard `orientation-requested`.
+* orientation uses `orientation-requested` when advertised, otherwise `StpOrientation`.
 * Advanced options must match a listed choice exactly; PPD constraints are
   enforced in strict mode.
 
