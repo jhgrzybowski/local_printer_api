@@ -98,8 +98,12 @@ pdftopdf output, but it shows each sheet turned so its pages read upright and
 does not model driver margins. Orientation uses the standard
 `orientation-requested` attribute that pdftopdf lays out; queues that only
 offer a driver rotation (Gutenprint's `StpOrientation`) rotate after layout, so
-the plan is less certain there. Plain-text files have no preview because CUPS
-paginates them.
+the plan is less certain there.
+
+Plain text is laid out at upload as an A4 PDF (10 pt DejaVu Sans Mono,
+80 columns by 60 lines, embedded so Polish and other non-Latin-1 letters print
+correctly). Without that font, or past 1,000 pages, text goes to CUPS as
+before: no preview, and CUPS's text filter garbles non-Latin-1 letters.
 
 Future options:
 

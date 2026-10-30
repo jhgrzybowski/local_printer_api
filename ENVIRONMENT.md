@@ -170,6 +170,7 @@ See `DEPLOYMENT_DOCKER.md` for the full container workflow.
 | `OFFICE_MAX_PAGES` | `500` | Maximum pages in the generated PDF. |
 | `MAX_IMAGE_PIXELS` | `30000000` | Maximum decoded pixel count for PNG/JPEG upload and preview. |
 | `PREVIEW_CONCURRENCY` | CPU count, up to `4` | Preview pages rendered at once; further requests wait. |
+| `TEXT_FONT_PATH` | DejaVu Sans Mono if installed | TrueType monospace font for laying out plain text as a PDF. |
 
 `OFFICE_TIMEOUT_SECONDS` sets the parent process wall-clock wait. The conversion
 worker receives the same value as its soft `RLIMIT_CPU` budget in CPU-seconds;

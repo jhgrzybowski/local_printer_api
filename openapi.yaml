@@ -1236,7 +1236,10 @@ components:
           type: boolean
         converted:
           type: boolean
-          description: True when Office input was converted once to PDF
+          description: >
+            True when Office input, or plain text laid out with an embedded
+            Unicode font, was converted once to PDF. Converted files have a
+            preview and accept any page order.
         printable_mime:
           type: string
         printable_sha256:
@@ -1723,6 +1726,16 @@ components:
       - strict_print_options_default
       - print_validation_url
       properties:
+        text:
+          type: object
+          description: Whether plain text is laid out as a PDF (A4, 80 columns) and with which font.
+          properties:
+            rendered_to_pdf:
+              type: boolean
+            font:
+              type:
+              - string
+              - 'null'
         native_mime_types:
           type: array
           items:
@@ -1867,7 +1880,7 @@ components:
             type: string
           description: Driver (PPD) constraints the selected options violate. /print rejects them in strict mode.
         layout:
-          description: How the selected pages land on sheets; null for plain text, whose pages CUPS lays out.
+          description: How the selected pages land on sheets; null for plain text that CUPS lays out because no font was available.
           oneOf:
           - $ref: '#/components/schemas/LayoutPlan'
           - type: 'null'

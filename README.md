@@ -361,7 +361,8 @@ curl -b cookies.txt -s -X POST "$PRINTER_BACKEND/print/validate" \
 `scale_percent` (10-400) scales PDF content like a dialog's custom scale.
 Settings use the queue's standard CUPS attributes where it advertises them;
 quality and colour then go through the driver presets that CUPS itself uses.
-Plain-text page selection is passed to CUPS and must be ascending.
+Plain text is laid out as an A4 PDF at upload, with an embedded Unicode font,
+so it previews and prints like a PDF.
 
 ### Preferences and history
 

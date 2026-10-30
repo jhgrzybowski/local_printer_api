@@ -175,7 +175,12 @@ def test_custom_scale_is_unsupported_for_images(client: TestClient) -> None:
     assert client.post("/print", json={"file_id": file_id, "options": {"scale_percent": 80}}).status_code == 422
 
 
-def test_text_page_selection_is_passed_to_cups(client: TestClient, cups: DialogCupsClient) -> None:
+def test_text_page_selection_is_passed_to_cups_without_a_font(
+    client: TestClient, cups: DialogCupsClient, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services import file_storage
+
+    monkeypatch.setattr(file_storage, "find_text_font", lambda: None)
     file_id = upload(client, b"line one\n" * 200, "notes.txt", "text/plain")
 
     response = client.post("/print", json={"file_id": file_id, "options": {"pages": "2-4, 7", "page_set": "even"}})
@@ -294,3 +299,25 @@ def test_high_quality_follows_the_queue_default_sides(
     app.dependency_overrides.clear()
 
     assert applied["Resolution"] == resolution
+
+
+def test_text_upload_renders_a_unicode_pdf_for_preview_and_print(
+    client: TestClient, cups: DialogCupsClient,
+) -> None:
+    from app.services.text_render import find_text_font
+
+    if find_text_font() is None:
+        pytest.skip("no Unicode monospace font installed (set TEXT_FONT_PATH)")
+    text = "Zażółć gęślą jaźń\n" + "\n".join(f"line {n}" for n in range(2, 131))
+    response = client.post("/files", files={"file": ("notatki.txt", text.encode(), "text/plain")})
+    body = response.json()
+
+    assert (body["converted"], body["preview_available"], body["page_count"]) == (True, True, 3)
+    assert body["printable_mime"] == "application/pdf"
+    reader = PdfReader(BytesIO(client.get(f"/files/{body['file_id']}/pdf").content))
+    assert reader.pages[0].extract_text().startswith("Zażółć gęślą jaźń")
+    assert client.get(f"/files/{body['file_id']}/preview/2?size=thumb").status_code == 200
+    printed = client.post("/print", json={"file_id": body["file_id"], "options": {"pages": "3,1"}})
+    assert printed.status_code == 200, printed.text
+    assert "page-ranges" not in printed.json()["applied_options"]
+    assert len(cups.printed_pages[-1]) == 2

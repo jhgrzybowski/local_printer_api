@@ -9,7 +9,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        cups cups-client cups-filters printer-driver-gutenprint \
+        cups cups-client cups-filters printer-driver-gutenprint fonts-dejavu-core \
         poppler-utils python3-cups python3-venv curl ca-certificates libmagic1 \
     && rm -rf /var/lib/apt/lists/*
 

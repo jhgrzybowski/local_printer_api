@@ -547,8 +547,12 @@ For PDFs:
 * page ranges, then `page_set` (odd or even), are applied by creating a temporary filtered PDF,
 * page order should be preserved.
 
-For plain text, CUPS paginates the file, so ranges are passed to CUPS and must
-be ascending without overlaps (`1-3,7`, not `7,1-3`).
+Plain text is normally laid out as a PDF at upload and behaves like a PDF.
+If no Unicode font was found (`/capabilities` reports `text.rendered_to_pdf:
+false`), CUPS paginates the file instead: ranges are passed to CUPS and must be
+ascending without overlaps (`1-3,7`, not `7,1-3`), and letters outside Latin-1
+(such as ą, ę, ł) print as garbage. Install `fonts-dejavu-core` or set
+`TEXT_FONT_PATH` to a TrueType monospace font.
 
 For images:
 

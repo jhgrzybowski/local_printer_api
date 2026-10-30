@@ -53,6 +53,7 @@ from app.services.preview import (
     PreviewService,
 )
 from app.services.print_service import PrintRequestError, submit_print_job, validate_print_job
+from app.services.text_render import find_text_font
 from app.services.status_translator import translate_error_status, translate_queue_status
 from app.settings import (
     CORS_ALLOWED_ORIGINS,
@@ -478,9 +479,13 @@ async def upload_file(
 def capabilities(storage: TempFileStorage = Depends(get_file_storage)) -> dict[str, object]:
     converter = OfficeConverter(storage.root / "conversion-work")
     office_formats = converter.format_availability()
+    text_font = find_text_font()
     available = any(office_formats.values())
     return {
         "native_mime_types": sorted(SUPPORTED_MIME_TYPES),
+        # Text is laid out as a PDF with this font, giving it a preview.
+        "text": {"rendered_to_pdf": text_font is not None,
+                 "font": text_font.stem if text_font else None},
         "office": {"available": available, "formats": [
             {"extension": extension, "mime_type": values[0], "available": office_formats[extension]}
             for extension, values in OFFICE_FORMATS.items()
