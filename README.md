@@ -35,12 +35,19 @@ Current backend capabilities:
   - DOCX, XLSX, PPTX, ODT, ODS, ODP with Office conversion enabled
 - Temporary file storage with metadata sidecars.
 - PDF page-count detection.
-- PDF and image preview generation.
+- PDF and image preview generation, with thumbnails and browser caching.
 - Preview page serving as PNG.
-- PDF page-range filtering before print submission.
-- Print submission through CUPS.
+- Print-dialog settings: page ranges, odd/even pages, copies and collation,
+  pages per sheet with layout direction and borders, scaling (fit, fill,
+  actual size, or a custom percentage), two-sided printing, reverse order,
+  paper size, paper type, tray, borderless, quality, colour, and every other
+  driver option as an advanced setting.
+- A sheet layout plan from `/print/validate`, so a client can redraw its
+  preview instantly when a setting changes.
+- Print submission through CUPS, with live job progress.
 - CUPS job listing, details, and cancellation.
-- Frontend-friendly `/options` endpoint based on detected CUPS/PPD capabilities.
+- Frontend-friendly `/options` endpoint with the driver's labels, paper sizes,
+  defaults, and constraints, cached so a dialog can query it freely.
 - SQLite-backed user accounts, sessions, print preferences, and print history.
 - Diagnostic and setup scripts.
 
@@ -219,6 +226,14 @@ With raw CUPS/PPD debug information:
 curl -s "$PRINTER_BACKEND/options?debug=true" | jq
 ```
 
+Besides the original blocks, the response lists the driver's labels
+(`paper_sizes.labels`, `media_types.labels`, `media_sources.labels`), paper
+geometry (`paper_sizes.details`), the queue's `defaults`, the newer settings
+(`page_set`, `pages_per_sheet`, `scaling`, `reverse_order`, `media_sources`,
+`borderless`), and `advanced`: every other driver option with its choices.
+Capabilities are cached for 30 seconds and then revalidated against the queue's
+PPD, so a change made with `lpadmin` appears within that time.
+
 ### Upload a file
 
 ```bash
@@ -244,7 +259,13 @@ export FILE_ID="replace-with-uploaded-file-id"
 
 For PDFs, this endpoint lists all page URLs without rendering them. Each page is
 rendered and cached when its PNG URL is requested. A page's `size_bytes` appears
-in the metadata after that page has been rendered.
+in the metadata after that page has been rendered. Each page also lists its
+size in points (`width_pt`, `height_pt`) and a `thumb_url`: add `?size=thumb`
+for a 320-pixel image that renders several times faster than the full page.
+Rendered pages are sent with `Cache-Control: immutable`, so a browser reuses
+them without asking again. At most `PREVIEW_CONCURRENCY` pages render at once
+(default: CPU count, up to 4), and concurrent requests for the same page share
+one render.
 
 ```bash
 curl -b cookies.txt -s "$PRINTER_BACKEND/files/$FILE_ID/preview" | jq
@@ -311,6 +332,36 @@ curl -b cookies.txt -s -X POST "$PRINTER_BACKEND/print" \
     }
   }' | jq
 ```
+
+### Print-dialog settings
+
+`POST /print/validate` takes the same body as `/print`, writes nothing, and
+returns a `layout` that places each selected page on a sheet side. Call it on
+every settings change and draw the preview from the cached page images:
+
+```bash
+curl -b cookies.txt -s -X POST "$PRINTER_BACKEND/print/validate" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "file_id": "'"$FILE_ID"'",
+    "options": {
+      "pages": "1-8",
+      "page_set": "odd",
+      "pages_per_sheet": 2,
+      "pages_per_sheet_layout": "lrtb",
+      "duplex": "long-edge",
+      "scaling": "fit",
+      "reverse_order": true,
+      "media_source": "Cassette",
+      "advanced": {"StpImageType": "Text"}
+    }
+  }' | jq '.valid, .conflicts, .layout.total_sheets, .layout.sides[0]'
+```
+
+`scale_percent` (10-400) scales PDF content like a dialog's custom scale.
+Settings use the queue's standard CUPS attributes where it advertises them;
+quality and colour then go through the driver presets that CUPS itself uses.
+Plain-text page selection is passed to CUPS and must be ascending.
 
 ### Preferences and history
 
@@ -417,6 +468,34 @@ bash -n scripts/*.sh
 ```
 
 Normal tests mock CUPS and should not require a physical printer.
+
+### Real CUPS without a printer
+
+`testbed/` builds an Ubuntu 26.04 image with CUPS, the Gutenprint MG5350
+driver, and a fake LPD printer. It adds `Canon_MG5350` (prints to the fake
+printer) and `Canon_Offline` (an unreachable address, like a printer that is
+switched off):
+
+```bash
+docker build -f testbed/Dockerfile -t local-printer-testbed .
+docker run -d --name printer-testbed -v "$PWD":/app:ro local-printer-testbed
+docker exec printer-testbed bash -c \
+  'cd /app && CUPS_INTEGRATION_QUEUE=Canon_MG5350 /venv/bin/python -m pytest -q -p no:cacheprovider tests/test_cups_integration.py'
+```
+
+The integration tests submit jobs through the real driver and compare the
+layout plan with the pages CUPS produces.
+
+### Benchmark
+
+`scripts/benchmark_api.py` times a print-dialog session (status, options,
+upload, preview, validation, and optionally real prints) against a running API
+and needs only the standard library:
+
+```bash
+python3 scripts/benchmark_api.py --base-url http://127.0.0.1:8000 --json results.json
+python3 scripts/benchmark_api.py --print   # also submits real jobs
+```
 
 ---
 

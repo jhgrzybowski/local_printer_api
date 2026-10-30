@@ -6,8 +6,8 @@
 2. Sign in or sign up; send the `local_printer_session` cookie on protected requests.
 3. Send multipart `file` to `POST /files`. Native PDF, PNG, JPEG, and UTF-8 text remain supported. Office-enabled deployments additionally accept **DOCX, XLSX, PPTX, ODT, ODS, ODP**. Filename extension and archive content must agree; HTTP Content-Type is not trusted.
 4. An Office upload succeeds only after conversion. Retain `file_id`. The response includes original MIME/size, converted PDF page count, `converted`, `printable_mime`, `printable_sha256`, warnings, and `pdf_url`. `GET /files/{file_id}` retrieves the same metadata later. Legacy uploads can have a null hash.
-5. Display warnings and review `GET /files/{file_id}/preview` plus individual PNG pages, or download the authenticated `pdf_url`. PDF pages render on demand. Preview and printing use the same stored PDF; there is no conversion at print time. PNG previews remain an approximation of physical output and do not simulate duplex, paper, cropping, or color management.
-6. Call `POST /print/validate` with the same body intended for `/print`. This selects pages and maps options without spooling or creating history. `valid` means every option is supported; `ready_for_print` reports the separate current queue state. Check both. Printing rechecks capabilities and readiness.
+5. Display warnings and review `GET /files/{file_id}/preview` plus individual PNG pages, or download the authenticated `pdf_url`. PDF pages render on demand; load `thumb_url` images for a page strip, then full pages for the main view. Rendered pages are cached by the browser. Preview and printing use the same stored PDF; there is no conversion at print time. Page images do not simulate driver margins or color management.
+6. Call `POST /print/validate` with the same body intended for `/print` on every settings change. This selects pages and maps options without writing files or creating history, and a switched-off printer does not slow it down. `valid` means every option is supported and no driver constraint conflicts; `ready_for_print` reports the separate current queue state. Check both. `layout` places each selected page on a sheet side (pages per sheet, scaling, two-sided pairing), so the preview can be redrawn from the cached page images without new renders. Printing rechecks capabilities and readiness.
 7. Submit `POST /print`, then follow `/jobs/{job_id}` and `/history`. CUPS completion means the spooler finished; it is not independent evidence of paper quality.
 
 Example request, usable with both validation and submission:
@@ -44,7 +44,7 @@ Priorities after Office support:
 
 - Idempotent print submission with persisted request keys and explicit uncertain-submission recovery, to prevent duplicate pages after network retries.
 - Spreadsheet worksheet/range/layout selection with a newly generated PDF preview for each selection.
-- Paper-source selection and tested photo presets combining media, size, borderless, and quality. Validate combinations against PPD constraints before offering them.
+- Tested photo presets combining media, size, borderless, and quality. Paper source (`media_source`), borderless, and the driver's photo modes (advanced `Resolution`) are selectable, and PPD constraints are enforced, but the combinations still need physical validation.
 - Multi-document batches with per-file outcome reporting and a clear partial-failure policy.
 - Multi-page TIFF normalization and per-user storage quotas.
 - Scanning as a separately probed capability, not inferred from CUPS printing support. Ink reporting remains best-effort.

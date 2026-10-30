@@ -341,6 +341,12 @@ For the verified setup:
 |  `631` | may be open but not driverless-usable |
 | `9100` | refused / not used                    |
 
+The API checks the printer's port with a 1.5-second connection attempt and
+reuses the result for 3 seconds. For up to a minute after that it answers with
+the last result at once and refreshes it in the background, so a switched-off
+printer does not slow `/status`, `/print/validate`, or `/print`. After the
+printer is switched on, `/status` reports it within a few seconds.
+
 ---
 
 ## LPD transport debugging
@@ -496,6 +502,8 @@ curl -4 -s "$PRINTER_BACKEND/options?debug=true" | jq
 ```
 
 The API should derive frontend-friendly choices from detected CUPS/PPD options.
+The API caches capabilities for 30 seconds, so a queue changed with `lpadmin`
+shows its new options within that time.
 
 ---
 
@@ -508,7 +516,8 @@ Examples of expected warnings:
 * option mapped through Gutenprint-specific PPD value,
 * option dropped because not exposed by the queue,
 * `collate` ignored when `copies=1`,
-* `fit_to_page` unsupported if no scaling option is detected.
+* `fit_to_page` unsupported if the queue advertises neither `print-scaling` nor a driver scaling option,
+* advanced options dropped because a main setting already sets the same option.
 
 Warnings become important when:
 
@@ -535,8 +544,11 @@ Supported examples:
 
 For PDFs:
 
-* page ranges are applied by creating a temporary filtered PDF,
+* page ranges, then `page_set` (odd or even), are applied by creating a temporary filtered PDF,
 * page order should be preserved.
+
+For plain text, CUPS paginates the file, so ranges are passed to CUPS and must
+be ascending without overlaps (`1-3,7`, not `7,1-3`).
 
 For images:
 
