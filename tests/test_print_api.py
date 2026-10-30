@@ -12,7 +12,7 @@ from pypdf import PdfReader, PdfWriter
 
 from app.main import app, get_cups_client, get_file_storage
 from app.models.print_options import PrintOptions
-from app.services.cups_client import CupsClientError, normalize_job
+from app.services.cups_client import CupsClientError, PrinterProfile, normalize_job
 from app.services.database import Database, JobClaim
 from app.services.file_storage import StoredFile, TempFileStorage
 from app.services.print_service import PrintRequestError, submit_print_job
@@ -58,7 +58,7 @@ class FakeCupsClient:
             )
         }
 
-    def get_queue(self) -> dict[str, Any]:
+    def get_queue(self, probe_max_age: float | None = None) -> dict[str, Any]:
         return self.queue
 
     def get_option_capabilities(self) -> dict[str, set[str]]:
@@ -68,6 +68,9 @@ class FakeCupsClient:
             "Duplex": {"None", "DuplexNoTumble", "DuplexTumble"},
             "Quality": {"Normal", "High"},
         }
+
+    def get_printer_profile(self) -> PrinterProfile:
+        return PrinterProfile(self.get_option_capabilities())
 
     def print_file(self, path: Path, title: str, options: dict[str, str]) -> int:
         self.submissions.append({"path": path, "title": title, "options": options})
@@ -138,7 +141,7 @@ class FakeCupsClient:
 
 
 class FailingCupsClient(FakeCupsClient):
-    def get_queue(self) -> dict[str, Any]:
+    def get_queue(self, probe_max_age: float | None = None) -> dict[str, Any]:
         raise CupsClientError("CUPS unavailable")
 
 

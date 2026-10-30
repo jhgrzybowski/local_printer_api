@@ -1,3 +1,7 @@
+from pathlib import Path
+
+import pytest
+
 from app.models.print_options import PrintOptions
 from app.services.lpoptions_parser import parse_lpoptions, parse_ppd_options
 from app.services.options_summary import build_options_summary
@@ -135,7 +139,27 @@ def test_duplex_mapping_all_modes() -> None:
 def test_quality_maps_to_detected_resolution() -> None:
     assert PrintOptions(quality="draft").to_cups_options(GUTENPRINT_CAPABILITIES).applied_options["Resolution"] == "300dpi"
     assert PrintOptions(quality="normal").to_cups_options(GUTENPRINT_CAPABILITIES).applied_options["Resolution"] == "600dpi"
-    assert PrintOptions(quality="high").to_cups_options(GUTENPRINT_CAPABILITIES).applied_options["Resolution"] == "612x600dpi"
+    # Gutenprint's 612x600dpi is its T-shirt transfer mode, not a higher
+    # resolution. Without a real one, high quality is not offered.
+    high = PrintOptions(quality="high").to_cups_options(GUTENPRINT_CAPABILITIES)
+    assert "Resolution" not in high.applied_options
+    assert "quality" in high.unsupported_options
+
+
+def test_high_quality_uses_a_real_higher_resolution() -> None:
+    capabilities = {"Resolution": {"600dpi", "612x600dpi", "1200x600dpi"}}
+
+    mapped = PrintOptions(quality="high").to_cups_options(capabilities)
+
+    assert mapped.applied_options["Resolution"] == "1200x600dpi"
+
+
+def test_queue_quality_presets_win_over_gutenprint_resolution_modes() -> None:
+    capabilities = {**GUTENPRINT_CAPABILITIES, "print-quality": {"4", "5"}}
+
+    assert PrintOptions(quality="normal").to_cups_options(capabilities).applied_options["print-quality"] == "4"
+    assert PrintOptions(quality="high").to_cups_options(capabilities).applied_options["print-quality"] == "5"
+    assert PrintOptions(quality="draft").to_cups_options(capabilities).applied_options["Resolution"] == "300dpi"
 
 
 def test_normal_resolution_is_not_reused_for_high_quality() -> None:
@@ -183,7 +207,7 @@ def test_options_summary_frontend_shape() -> None:
     assert summary["media_types"]["mapping"]["plain"] == "Plain"
     assert summary["fit_to_page"]["raw_option"] == "StpiShrinkOutput"
     assert summary["collate"]["supported"] is False
-    assert summary["quality"]["recommended_mapping"]["high"] == "612x600dpi"
+    assert summary["quality"]["recommended_mapping"]["high"] is None
     assert summary["color_modes"]["choices"] == ["monochrome", "color", "auto"]
 
 
@@ -211,7 +235,7 @@ def test_summary_uses_the_option_selected_for_submission() -> None:
 def test_quality_summary_lists_api_choices_when_raw_options_are_mixed() -> None:
     capabilities = {
         "print-quality": {"3"},
-        "Resolution": {"600dpi", "612x600dpi"},
+        "Resolution": {"600dpi", "612x600dpi", "1200x600dpi"},
     }
     quality = build_options_summary("Canon_MG5350", capabilities)["quality"]
 
@@ -221,7 +245,7 @@ def test_quality_summary_lists_api_choices_when_raw_options_are_mixed() -> None:
     assert quality["recommended_mapping"] == {
         "draft": "3",
         "normal": "600dpi",
-        "high": "612x600dpi",
+        "high": "1200x600dpi",
     }
     assert quality["option_mapping"] == {
         "draft": "print-quality",
@@ -232,3 +256,136 @@ def test_quality_summary_lists_api_choices_when_raw_options_are_mixed() -> None:
 
 def test_empty_capabilities_do_not_advertise_orientation() -> None:
     assert build_options_summary("Canon_MG5350", {})["orientation"]["supported"] is False
+
+
+# Capabilities of the real Canon_MG5350 queue: the PPD plus the IPP job
+# attributes CUPS advertises for it (checked against CUPS 2.4 + Gutenprint).
+MG5350_QUEUE = {
+    **GUTENPRINT_CAPABILITIES,
+    "InputSlot": {"AutoSwitch", "Rear", "Cassette", "Continuous", "CD"},
+    "StpFullBleed": {"False", "True"},
+    "StpImageType": {"None", "Text", "Graphics", "TextGraphics", "Photo", "LineArt"},
+    "sides": {"one-sided", "two-sided-long-edge", "two-sided-short-edge"},
+    "print-color-mode": {"monochrome", "color"},
+    "print-quality": {"4", "5"},
+    "number-up": {"1", "2", "4", "6", "9", "16"},
+    "number-up-layout": {"lrtb", "lrbt", "rltb", "rlbt", "tblr", "tbrl", "btlr", "btrl"},
+    "page-delivery": {"reverse-order", "same-order"},
+    "print-scaling": {"auto", "auto-fit", "fill", "fit", "none"},
+    "media-source": {"auto", "rear", "main", "continuous", "cd"},
+    "collate": {"true", "false"},
+}
+
+
+def test_print_dialog_options_map_to_standard_cups_attributes() -> None:
+    mapped = PrintOptions(
+        copies=2, collate=True, pages_per_sheet=4, pages_per_sheet_layout="tblr", page_border="single",
+        scaling="fill", reverse_order=True, media_source="rear", borderless=True,
+    ).to_cups_options(MG5350_QUEUE)
+
+    assert mapped.unsupported_options == []
+    assert mapped.applied_options == {
+        "copies": "2",
+        "collate": "true",
+        "number-up": "4",
+        "number-up-layout": "tblr",
+        "page-border": "single",
+        "print-scaling": "fill",
+        "page-delivery": "reverse-order",
+        "InputSlot": "Rear",
+        "StpFullBleed": "True",
+    }
+
+
+def test_fit_to_page_now_scales_through_print_scaling() -> None:
+    # The Gutenprint StpiShrinkOutput fallback only restates the driver default.
+    assert PrintOptions(fit_to_page=True).to_cups_options(MG5350_QUEUE).applied_options == {
+        "copies": "1", "print-scaling": "fit",
+    }
+    assert PrintOptions(fit_to_page=True).to_cups_options(GUTENPRINT_CAPABILITIES).applied_options[
+        "StpiShrinkOutput"] == "Shrink"
+
+
+def test_scale_percent_asks_cups_for_actual_size() -> None:
+    mapped = PrintOptions(scale_percent=80).to_cups_options(MG5350_QUEUE)
+
+    assert mapped.applied_options["print-scaling"] == "none"
+    assert "scale_percent" in PrintOptions(scale_percent=80).to_cups_options({"PageSize": {"A4"}}).unsupported_options
+
+
+@pytest.mark.parametrize("options", [
+    {"scale_percent": 80, "scaling": "fit"},
+    {"scale_percent": 80, "fit_to_page": True},
+    {"scale_percent": 80, "pages_per_sheet": 2},
+    {"scale_percent": 5},
+    {"pages_per_sheet": 3},
+])
+def test_invalid_scaling_combinations_are_rejected(options: dict[str, object]) -> None:
+    with pytest.raises(ValueError):
+        PrintOptions(**options)
+
+
+def test_media_source_accepts_ppd_keywords_aliases_and_ipp_names() -> None:
+    assert PrintOptions(media_source="Cassette").to_cups_options(MG5350_QUEUE).applied_options["InputSlot"] == "Cassette"
+    assert PrintOptions(media_source="auto").to_cups_options(MG5350_QUEUE).applied_options["InputSlot"] == "AutoSwitch"
+    ipp_only = PrintOptions(media_source="main").to_cups_options({"media-source": {"auto", "main"}})
+    assert ipp_only.applied_options["media-source"] == "main"
+    assert "media_source" in PrintOptions(media_source="manual").to_cups_options(MG5350_QUEUE).unsupported_options
+
+
+def test_advanced_options_pass_through_only_detected_choices() -> None:
+    mapped = PrintOptions(
+        duplex="long-edge",
+        advanced={"StpImageType": "Photo", "Resolution": "605x600dpi", "StpBogus": "x",
+                  "PageSize": "A4", "sides": "one-sided", "MediaType": "Vinyl"},
+    ).to_cups_options(MG5350_QUEUE)
+
+    assert mapped.applied_options["StpImageType"] == "Photo"
+    assert mapped.applied_options["sides"] == "two-sided-long-edge"
+    assert "Ignored advanced sides because a print setting already sets it" in mapped.warnings
+    # 605x600dpi is not among the trimmed test Resolution choices.
+    assert sorted(mapped.unsupported_options) == [
+        "advanced.MediaType", "advanced.PageSize", "advanced.Resolution", "advanced.StpBogus",
+    ]
+    assert "Resolution" not in mapped.applied_options
+
+
+def test_number_up_needs_an_advertised_value() -> None:
+    mapped = PrintOptions(pages_per_sheet=16).to_cups_options({"number-up": {"1", "2"}})
+
+    assert "pages_per_sheet" in mapped.unsupported_options
+    assert "number-up" not in mapped.applied_options
+
+
+def test_options_summary_describes_new_dialog_settings() -> None:
+    from app.services.ppd import parse_ppd
+
+    ppd = parse_ppd(
+        (Path(__file__).parent / "fixtures" / "gutenprint_mg5350_excerpt.ppd").read_text(encoding="utf-8")
+    )
+    capabilities = {**ppd.capabilities(), **{k: v for k, v in MG5350_QUEUE.items() if k[0].islower()}}
+    summary = build_options_summary(
+        "Canon_MG5350", capabilities, ppd=ppd,
+        ipp={"sides-default": "one-sided", "print-color-mode-default": "color", "print-quality-default": 4},
+    )
+
+    assert summary["pages_per_sheet"]["choices"] == [1, 2, 4, 6, 9, 16]
+    assert summary["scaling"]["custom_percent"]["supported"] is True
+    assert summary["reverse_order"]["supported"] is True
+    assert summary["media_sources"]["labels"]["Rear"] == "Rear tray"
+    assert summary["borderless"]["supported"] is True
+    assert summary["paper_sizes"]["labels"]["w288h432"] == "4x6"
+    assert {"value": "A4", "label": "A4", "width_pt": 595.0, "height_pt": 842.0,
+            "margins_pt": {"left": 0.0, "bottom": 0.0, "right": 0.0, "top": 0.0}} in summary["paper_sizes"]["details"]
+    assert summary["media_types"]["labels"]["GlossyPaper"] == "Glossy Photo Paper"
+    assert summary["defaults"] == {
+        "paper_size": "Letter", "duplex": "none", "color_mode": "color", "quality": "normal",
+        "media_type": "plain", "media_source": "AutoSwitch", "copies": 1, "pages_per_sheet": 1, "scaling": "auto",
+    }
+    advanced = {option["keyword"]: option for option in summary["advanced"]}
+    # Settings with a dedicated control stay out of the advanced list...
+    assert not {"PageSize", "Duplex", "ColorModel", "MediaType", "InputSlot", "StpFullBleed"} & set(advanced)
+    # ...but photo and other print modes stay reachable.
+    assert advanced["Resolution"]["choices"][3] == {"value": "605x600dpi", "label": "600x600 DPI PHOTO HIGH"}
+    assert advanced["StpImageType"]["default"] == "TextGraphics"
+    assert summary["driver"] == "Canon PIXMA MG5350 - CUPS+Gutenprint v5.3.4"

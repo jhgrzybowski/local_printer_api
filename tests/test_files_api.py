@@ -124,8 +124,10 @@ def test_pdf_preview_list_allows_pages_not_rendered_yet(
     response = file_client.get(f"/files/{file_id}/preview")
     assert response.status_code == 200
     assert response.json()["pages"] == [
-        {"page": 1, "url": f"/files/{file_id}/preview/1"},
-        {"page": 2, "url": f"/files/{file_id}/preview/2"},
+        {"page": 1, "url": f"/files/{file_id}/preview/1",
+         "thumb_url": f"/files/{file_id}/preview/1?size=thumb", "width_pt": 72.0, "height_pt": 72.0},
+        {"page": 2, "url": f"/files/{file_id}/preview/2",
+         "thumb_url": f"/files/{file_id}/preview/2?size=thumb", "width_pt": 72.0, "height_pt": 72.0},
     ]
 
 
@@ -133,20 +135,18 @@ def test_pdf_preview_renders_only_requested_page(
     file_client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from PIL import Image
-    import pdf2image
+    from app.services import preview
 
-    rendered_pages: list[int] = []
+    rendered_pages: list[tuple[int, bool]] = []
 
-    def render_page(source: str, **kwargs: object) -> list[Image.Image]:
+    def render_page(source: Path, page: int, **kwargs: object) -> Image.Image:
         assert Path(source).exists()
-        assert kwargs["first_page"] == kwargs["last_page"]
-        assert kwargs["size"] == 1600
-        assert kwargs["timeout"] == 30
-        assert kwargs["fmt"] == "ppm"
-        rendered_pages.append(int(kwargs["first_page"]))
-        return [Image.new("RGB", (4, 4), color="white")]
+        assert kwargs["dpi"] == 110
+        rendered_pages.append((page, bool(kwargs["exact"])))
+        size = 4 if not kwargs["exact"] else 2
+        return Image.new("RGB", (size, size), color="white")
 
-    monkeypatch.setattr(pdf2image, "convert_from_path", render_page)
+    monkeypatch.setattr(preview, "render_pdf_page", render_page)
     upload_response = file_client.post(
         "/files",
         files={"file": ("three-pages.pdf", make_pdf(3), "application/pdf")},
@@ -159,20 +159,77 @@ def test_pdf_preview_renders_only_requested_page(
     assert metadata.status_code == 200
     assert [page["page"] for page in metadata.json()["pages"]] == [1, 2, 3]
     assert all("size_bytes" not in page for page in metadata.json()["pages"])
+    assert metadata.json()["pages"][0]["width_pt"] == 72.0
     assert rendered_pages == []
-    assert not preview_dir.exists()
+    # Listing reads page sizes once; no page is rendered yet.
+    assert sorted(path.name for path in preview_dir.iterdir()) == ["geometry.json"]
 
     page = file_client.get(f"/files/{file_id}/preview/2")
     assert page.status_code == 200
     assert page.headers["content-type"] == "image/png"
-    assert rendered_pages == [2]
-    assert sorted(path.name for path in preview_dir.iterdir()) == ["page-2.png"]
+    assert "immutable" in page.headers["cache-control"]
+    assert rendered_pages == [(2, False)]
+    assert sorted(path.name for path in preview_dir.iterdir()) == ["geometry.json", "page-2.png"]
 
     assert file_client.get(f"/files/{file_id}/preview/2").status_code == 200
-    assert rendered_pages == [2]
+    assert rendered_pages == [(2, False)]
     metadata = file_client.get(f"/files/{file_id}/preview")
     assert metadata.json()["pages"][1]["size_bytes"] == len(page.content)
     assert "size_bytes" not in metadata.json()["pages"][0]
+
+    thumb = file_client.get(f"/files/{file_id}/preview/2?size=thumb")
+    assert thumb.status_code == 200
+    assert rendered_pages == [(2, False), (2, True)]
+    assert len(thumb.content) < len(page.content)
+    assert file_client.get(f"/files/{file_id}/preview/2?size=huge").status_code == 400
+
+
+def test_concurrent_requests_render_a_page_once(
+    file_client: TestClient, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    from PIL import Image
+    from app.services import preview
+
+    calls: list[int] = []
+    release = threading.Event()
+
+    def slow_render(source: Path, page: int, **kwargs: object) -> Image.Image:
+        calls.append(page)
+        release.wait(2)
+        return Image.new("RGB", (4, 4), color="white")
+
+    monkeypatch.setattr(preview, "render_pdf_page", slow_render)
+    file_id = file_client.post(
+        "/files", files={"file": ("one.pdf", make_pdf(1), "application/pdf")},
+    ).json()["file_id"]
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [pool.submit(file_client.get, f"/files/{file_id}/preview/1") for _ in range(4)]
+        threading.Timer(0.3, release.set).start()
+        statuses = [future.result().status_code for future in futures]
+
+    assert statuses == [200, 200, 200, 200]
+    assert calls == [1]
+
+
+def test_pdf_preview_renders_with_poppler(file_client: TestClient) -> None:
+    import shutil
+    from PIL import Image
+
+    if shutil.which("pdftoppm") is None:
+        pytest.skip("poppler is not installed")
+    file_id = file_client.post(
+        "/files", files={"file": ("one.pdf", make_pdf(1), "application/pdf")},
+    ).json()["file_id"]
+
+    full = file_client.get(f"/files/{file_id}/preview/1")
+    thumb = file_client.get(f"/files/{file_id}/preview/1?size=thumb")
+
+    assert full.status_code == 200 and thumb.status_code == 200
+    # A 1-inch page renders at PREVIEW_DPI; a thumbnail's long side is 320 px.
+    assert Image.open(BytesIO(full.content)).size == (110, 110)
+    assert Image.open(BytesIO(thumb.content)).size == (320, 320)
 
 
 def test_unknown_file_id_returns_404(file_client: TestClient) -> None:

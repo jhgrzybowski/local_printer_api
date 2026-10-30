@@ -147,6 +147,12 @@ paths:
     get:
       tags: [Printer]
       summary: Get detected printer capabilities
+      description: >
+        Everything a print dialog needs: the main settings with the driver's own
+        labels and paper geometry, the queue's defaults, and every remaining
+        driver option under advanced. Capabilities are cached for 30 seconds and
+        revalidated against the queue's PPD, so repeated calls are cheap. The
+        response is gzip-compressed when the client accepts it.
       operationId: getOptions
       parameters:
         - name: debug
@@ -257,9 +263,11 @@ paths:
       tags:
       - Print
       summary: Validate a print request without submitting it
-      description: Uses the same PDF page selection and option mapper as /print. valid means all requested options
-        are supported. ready_for_print is a separate live queue snapshot. /print rechecks readiness and options; validation
-        does not reserve the queue.
+      description: Uses the same page selection and option mapper as /print, without writing any file, so a
+        print dialog can call it on every settings change. valid means all requested options are supported and
+        no driver constraint conflicts. layout plans how the selected pages land on sheets. ready_for_print is a
+        live queue snapshot; a printer that is switched off is detected within seconds without delaying the reply.
+        /print rechecks readiness and options; validation does not reserve the queue.
       operationId: validatePrint
       security: *id001
       requestBody:
@@ -416,9 +424,26 @@ paths:
           schema:
             type: integer
             minimum: 1
+        - name: size
+          in: query
+          required: false
+          description: >
+            full renders at PREVIEW_DPI with the long side capped at 1600 px.
+            thumb scales the long side to 320 px for page strips.
+          schema:
+            type: string
+            enum: [full, thumb]
+            default: full
       responses:
         "200":
-          description: Preview image
+          description: >
+            Preview image. Rendered pages never change, so the response carries
+            Cache-Control private, max-age=604800, immutable.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+              example: private, max-age=604800, immutable
           content:
             image/png:
               schema:
@@ -427,7 +452,7 @@ paths:
         "401":
           $ref: "#/components/responses/AuthenticationRequired"
         "400":
-          description: Invalid page number
+          description: Invalid page number or preview size
           content:
             application/json:
               schema:
@@ -493,14 +518,16 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '422':
-          description: Invalid request or unsupported print options
+          description: Invalid request, unsupported print options, or options that the driver's constraints forbid together
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-      description: Unsupported options are rejected before submission by default. Set strict_options=false only to
-        opt into warning-and-drop behavior. Unspecified options inherit CUPS defaults. After an ambiguous network
-        failure, inspect history before retrying; requests are not idempotent.
+      description: Unsupported options and driver constraint conflicts are rejected before submission by default.
+        Set strict_options=false only to opt into warning-and-drop behavior. Unspecified options inherit CUPS
+        defaults. PDF pages are selected (pages, then page_set) and custom-scaled before CUPS receives them; plain
+        text page selection is passed to CUPS as page-ranges and page-set and must be ascending. After an ambiguous
+        network failure, inspect history before retrying; requests are not idempotent.
 
   /jobs:
     get:
@@ -1033,6 +1060,21 @@ components:
             type: string
         notes:
           type: string
+        labels:
+          description: Driver labels for raw choices, e.g. w288h432 -> 4x6 or Rear -> Rear tray.
+          type: object
+          additionalProperties:
+            type: string
+        default:
+          description: The queue's default raw choice.
+          type:
+            - string
+            - "null"
+        details:
+          description: paper_sizes only. Sheet size and unprintable margins for each choice.
+          type: array
+          items:
+            $ref: "#/components/schemas/PaperSizeDetail"
 
     PrinterOptionsResponse:
       type: object
@@ -1066,6 +1108,94 @@ components:
           $ref: "#/components/schemas/OptionBlock"
         orientation:
           $ref: "#/components/schemas/OptionBlock"
+        copies:
+          type: object
+          properties:
+            supported:
+              type: boolean
+            min:
+              type: integer
+            max:
+              type: integer
+        page_set:
+          $ref: "#/components/schemas/OptionBlock"
+        pages_per_sheet:
+          type: object
+          properties:
+            api_name:
+              type: string
+            raw_option:
+              type:
+                - string
+                - "null"
+            supported:
+              type: boolean
+            choices:
+              type: array
+              items:
+                type: integer
+            layouts:
+              type: array
+              items:
+                type: string
+            default_layout:
+              type:
+                - string
+                - "null"
+            borders:
+              type: array
+              items:
+                type: string
+        scaling:
+          type: object
+          properties:
+            api_name:
+              type: string
+            raw_option:
+              type:
+                - string
+                - "null"
+            supported:
+              type: boolean
+            choices:
+              type: array
+              items:
+                type: string
+            custom_percent:
+              type: object
+              properties:
+                api_name:
+                  type: string
+                supported:
+                  type: boolean
+                min:
+                  type: integer
+                max:
+                  type: integer
+                documents:
+                  type: array
+                  items:
+                    type: string
+        reverse_order:
+          $ref: "#/components/schemas/OptionBlock"
+        media_sources:
+          $ref: "#/components/schemas/OptionBlock"
+        borderless:
+          $ref: "#/components/schemas/OptionBlock"
+        defaults:
+          $ref: "#/components/schemas/PrintDefaults"
+        advanced:
+          description: >
+            Driver options without a dedicated setting, like a print dialog's
+            advanced tab. Send choices back in PrintOptions.advanced.
+          type: array
+          items:
+            $ref: "#/components/schemas/AdvancedOption"
+        driver:
+          type:
+            - string
+            - "null"
+          example: Canon PIXMA MG5350 - CUPS+Gutenprint v5.3.4
         debug:
           type: object
           additionalProperties: true
@@ -1134,10 +1264,19 @@ components:
         url:
           type: string
           example: /files/uploaded-file-id/preview/1
+        thumb_url:
+          type: string
+          example: /files/uploaded-file-id/preview/1?size=thumb
         size_bytes:
           type: integer
           minimum: 0
-          description: Present after the preview page has been rendered
+          description: Present after the full preview page has been rendered
+        width_pt:
+          type: number
+          description: Displayed page width in points (after the page's own rotation).
+        height_pt:
+          type: number
+          description: Displayed page height in points. Images use their resolution, or 128 ppi without one.
 
     PreviewResponse:
       type: object
@@ -1207,6 +1346,74 @@ components:
           type:
             - boolean
             - "null"
+          description: Scale pages to the printable area. Ignored when scaling is set.
+        page_set:
+          type:
+            - string
+            - "null"
+          enum: [all, odd, even, null]
+          description: Odd or even document page numbers, applied after pages.
+        pages_per_sheet:
+          type:
+            - integer
+            - "null"
+          enum: [1, 2, 4, 6, 9, 16, null]
+        pages_per_sheet_layout:
+          type:
+            - string
+            - "null"
+          enum: [lrtb, lrbt, rltb, rlbt, tblr, tbrl, btlr, btrl, null]
+          description: Order of pages on a sheet, e.g. lrtb is left to right, then top to bottom.
+        page_border:
+          type:
+            - string
+            - "null"
+          enum: [none, single, single-thick, double, double-thick, null]
+        scaling:
+          type:
+            - string
+            - "null"
+          enum: [auto, auto-fit, fit, fill, none, null]
+          description: >
+            auto keeps pages that fit and shrinks larger ones; fit scales to the
+            printable area; fill covers the sheet and crops; none prints at actual size.
+        scale_percent:
+          type:
+            - integer
+            - "null"
+          minimum: 10
+          maximum: 400
+          description: >
+            Custom scale of PDF page content, centred on the page. Requires
+            pages_per_sheet=1 and cannot be combined with fit_to_page or a scaling
+            other than none.
+        reverse_order:
+          type:
+            - boolean
+            - "null"
+          description: Deliver sheets last to first (duplex pairs stay together).
+        media_source:
+          type:
+            - string
+            - "null"
+          example: Rear
+          description: Input tray, as a media_sources choice or auto.
+        borderless:
+          type:
+            - boolean
+            - "null"
+        advanced:
+          type:
+            - object
+            - "null"
+          additionalProperties:
+            type: string
+          example:
+            StpImageType: Photo
+          description: >
+            Driver options from the advanced list of /options, keyword to choice.
+            Values must match a listed choice. A main setting that sets the same
+            option wins.
 
     PrintRequest:
       type: object
@@ -1314,6 +1521,27 @@ components:
         action_hint:
           type: string
           description: Frontend-safe explanation of allowed job actions.
+        processing_at:
+          oneOf:
+            - type: integer
+            - type: "null"
+        pages_completed:
+          type:
+            - integer
+            - "null"
+          description: Impressions (printed sides) CUPS has finished.
+        sheets_completed:
+          type:
+            - integer
+            - "null"
+        media_progress:
+          type:
+            - integer
+            - "null"
+          description: Percent of the current sheet CUPS has processed (CUPS extension).
+        state_message:
+          type: string
+          description: Latest message from the printer driver or backend.
 
     JobsResponse:
       type: object
@@ -1574,6 +1802,16 @@ components:
               type: integer
             dpi:
               type: integer
+            thumb_dimension:
+              type: integer
+              description: Long side of ?size=thumb preview pages, in pixels.
+            sizes:
+              type: array
+              items:
+                type: string
+            concurrency:
+              type: integer
+              description: Preview pages rendered at once.
         strict_print_options_default:
           type: boolean
         print_validation_url:
@@ -1623,3 +1861,204 @@ components:
           type:
           - string
           - 'null'
+        conflicts:
+          type: array
+          items:
+            type: string
+          description: Driver (PPD) constraints the selected options violate. /print rejects them in strict mode.
+        layout:
+          description: How the selected pages land on sheets; null for plain text, whose pages CUPS lays out.
+          oneOf:
+          - $ref: '#/components/schemas/LayoutPlan'
+          - type: 'null'
+
+    PaperSizeDetail:
+      type: object
+      properties:
+        value:
+          type: string
+          example: w288h432
+        label:
+          type: string
+          example: 4x6
+        width_pt:
+          type: number
+        height_pt:
+          type: number
+        margins_pt:
+          description: Unprintable margins in portrait orientation; null when the driver does not say.
+          oneOf:
+          - type: object
+            properties:
+              left:
+                type: number
+              bottom:
+                type: number
+              right:
+                type: number
+              top:
+                type: number
+          - type: 'null'
+
+    PrintDefaults:
+      description: The queue's defaults in API values, to initialise a dialog. Null when unknown.
+      type: object
+      properties:
+        paper_size:
+          type:
+          - string
+          - 'null'
+        duplex:
+          type:
+          - string
+          - 'null'
+        color_mode:
+          type:
+          - string
+          - 'null'
+        quality:
+          type:
+          - string
+          - 'null'
+        media_type:
+          type:
+          - string
+          - 'null'
+        media_source:
+          type:
+          - string
+          - 'null'
+        copies:
+          type: integer
+        pages_per_sheet:
+          type: integer
+        scaling:
+          type:
+          - string
+          - 'null'
+
+    AdvancedOption:
+      type: object
+      properties:
+        keyword:
+          type: string
+          example: StpImageType
+        label:
+          type: string
+          example: Image Type
+        group:
+          type: string
+        ui:
+          type: string
+          enum: [PickOne, PickMany, Boolean]
+        hint:
+          type:
+          - string
+          - 'null'
+          description: Driver UI hint such as checkbox or dropdown.
+        default:
+          type:
+          - string
+          - 'null'
+        choices:
+          type: array
+          items:
+            type: object
+            properties:
+              value:
+                type: string
+              label:
+                type: string
+
+    LayoutPlan:
+      description: >
+        How the selected pages land on sheets, following CUPS number-up,
+        print-scaling, and orientation rules. A sheet may be shown turned so its
+        pages read upright, as print dialogs do. Draw each cell's page image
+        rotated by rotate degrees inside the cell. An approximation: the driver
+        can still shift content by its hardware margins.
+      type: object
+      properties:
+        paper:
+          type: object
+          properties:
+            keyword:
+              type: string
+            label:
+              type: string
+            width_pt:
+              type: number
+            height_pt:
+              type: number
+        pages_per_sheet:
+          type: integer
+        pages_per_sheet_layout:
+          type:
+          - string
+          - 'null'
+        page_border:
+          type:
+          - string
+          - 'null'
+        scaling:
+          type: string
+          enum: [auto, auto-fit, fit, fill, none, custom]
+        scale_percent:
+          type:
+          - integer
+          - 'null'
+        selected_page_count:
+          type: integer
+        impressions_per_copy:
+          type: integer
+          description: Printed sides per copy.
+        sheets_per_copy:
+          type: integer
+        copies:
+          type: integer
+        total_sheets:
+          type: integer
+        sides:
+          type: array
+          items:
+            $ref: '#/components/schemas/LayoutSide'
+
+    LayoutSide:
+      type: object
+      properties:
+        sheet:
+          type: integer
+        face:
+          type: string
+          enum: [front, back]
+        width_pt:
+          type: number
+        height_pt:
+          type: number
+        printable:
+          $ref: '#/components/schemas/LayoutBox'
+        cells:
+          type: array
+          items:
+            allOf:
+            - $ref: '#/components/schemas/LayoutBox'
+            - type: object
+              properties:
+                page:
+                  type: integer
+                rotate:
+                  type: integer
+                  enum: [0, 90]
+
+    LayoutBox:
+      description: Fractions of the sheet from its top-left corner. Values beyond 0..1 are cropped.
+      type: object
+      properties:
+        x:
+          type: number
+        y:
+          type: number
+        width:
+          type: number
+        height:
+          type: number
