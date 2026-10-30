@@ -26,7 +26,7 @@ def test_long_lines_wrap_between_words() -> None:
         "A long line that is wider than eighty columns should wrap onto the next line",
         "rather than being cut off.",
     ]
-    assert text_render._wrap("  indented " + "y" * 90, 40) == ["  indented", "y" * 40, "y" * 40, "y" * 10]
+    assert list(text_render._wrap("  indented " + "y" * 90, 40)) == ["  indented", "y" * 40, "y" * 40, "y" * 10]
 
 
 def test_pagination_fills_pages_without_a_trailing_blank_page() -> None:

@@ -12,6 +12,7 @@ import bisect
 import os
 import struct
 import zlib
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -104,20 +105,20 @@ def _paginate(text: str, columns: int, rows: int) -> list[list[str]]:
     return pages
 
 
-def _wrap(line: str, columns: int) -> list[str]:
+def _wrap(line: str, columns: int) -> Iterator[str]:
     """Break at the last space that fits, as a browser does; split only
-    words longer than a whole line."""
-    rows = []
-    while len(line) > columns:
-        cut = line.rfind(" ", 0, columns + 1)
-        if cut <= 0:
-            rows.append(line[:columns])
-            line = line[columns:]
+    words longer than a whole line. Rows are yielded one at a time so the
+    page limit stops a huge line early."""
+    start = 0
+    while len(line) - start > columns:
+        cut = line.rfind(" ", start, start + columns + 1)
+        if cut <= start:
+            yield line[start:start + columns]
+            start += columns
         else:
-            rows.append(line[:cut])
-            line = line[cut + 1:]
-    rows.append(line)
-    return rows
+            yield line[start:cut]
+            start = cut + 1
+    yield line[start:]
 
 
 def _expand_tabs(line: str) -> str:

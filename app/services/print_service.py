@@ -123,6 +123,7 @@ def prepare_print_file(
     record: StoredFile,
     options: PrintOptions,
     selection: PageSelection | None = None,
+    scale_percent: int | None = None,
 ) -> PreparedPrint:
     source = storage.printable_path(record)
     if not source.exists():
@@ -133,7 +134,7 @@ def prepare_print_file(
                              cups_options=selection.cups_options)
 
     filtered = storage.filtered_pdf_path(record.file_id)
-    scale = options.scale_percent / 100 if options.scale_percent is not None else None
+    scale = scale_percent / 100 if scale_percent is not None else None
     try:
         write_pdf_pages(source, filtered, selection.pages, scale=scale)
     except PageRangeError as exc:
@@ -179,16 +180,7 @@ def _driver_high_mode(profile: PrinterProfile, applied: dict[str, str]) -> str |
         return None
     media_option = ppd.options.get("MediaType")
     media = applied.get("MediaType") or (media_option.default if media_option else None) or "Plain"
-    # Settings the job leaves out follow the queue's defaults.
-    duplex_option = ppd.options.get("Duplex")
-    if "sides" in applied:
-        two_sided = applied["sides"] != "one-sided"
-    elif "Duplex" in applied:
-        two_sided = applied["Duplex"] != "None"
-    elif profile.ipp.get("sides-default"):
-        two_sided = profile.ipp["sides-default"] != "one-sided"
-    else:
-        two_sided = bool(duplex_option and duplex_option.default not in (None, "None"))
+    two_sided = _two_sided(profile, applied)
     if PHOTO_MEDIA_RE.search(media):
         pattern = PHOTO_HIGH_MODE_RE
     elif two_sided or media.lower() in {"envelope", "hagaki"}:
@@ -198,6 +190,18 @@ def _driver_high_mode(profile: PrinterProfile, applied: dict[str, str]) -> str |
     else:
         return None
     return next((choice.value for choice in resolution.choices if pattern.search(choice.label)), None)
+
+
+def _two_sided(profile: PrinterProfile, applied: dict[str, str]) -> bool:
+    """Whether the job prints on both sides; sides the job leaves out follow the queue's defaults."""
+    if "sides" in applied:
+        return applied["sides"] != "one-sided"
+    if "Duplex" in applied:
+        return applied["Duplex"] != "None"
+    if profile.ipp.get("sides-default"):
+        return profile.ipp["sides-default"] != "one-sided"
+    duplex_option = profile.ppd.options.get("Duplex") if profile.ppd is not None else None
+    return bool(duplex_option and duplex_option.default not in (None, "None"))
 
 
 def submit_print_job(
@@ -221,7 +225,9 @@ def submit_print_job(
     if strict_options and conflicts:
         raise PrintRequestError(f"Conflicting options: {'; '.join(conflicts)}", 422)
 
-    prepared = prepare_print_file(storage, record, options, selection)
+    # Scale only when the mapping kept it, as the validated layout does.
+    scale_percent = options.scale_percent if "scale_percent" not in mapped.unsupported_options else None
+    prepared = prepare_print_file(storage, record, options, selection, scale_percent)
     applied = {**mapped.applied_options, **prepared.cups_options}
     try:
         title = _safe_title(prepared.title)
@@ -331,7 +337,7 @@ def build_layout(
         page_border=applied.get("page-border"),
         scaling=scaling,
         scale_percent=scale_percent,
-        duplex=options.duplex if "duplex" not in dropped else None,
+        two_sided=_two_sided(profile, applied),
         copies=options.copies,
         borderless=bool(options.borderless) and "borderless" not in dropped,
         reverse_order=applied.get("page-delivery") == "reverse-order",

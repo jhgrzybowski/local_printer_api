@@ -44,14 +44,13 @@ def plan_layout(
     page_border: str | None = None,
     scaling: str | None = None,
     scale_percent: int | None = None,
-    duplex: str | None = None,
+    two_sided: bool = False,
     copies: int = 1,
     borderless: bool = False,
     reverse_order: bool = False,
 ) -> dict[str, object]:
     pages_per_sheet = pages_per_sheet if pages_per_sheet in NUP_GRID else 1
     mode = "custom" if scale_percent is not None else (scaling or "auto")
-    two_sided = duplex in {"long-edge", "short-edge"}
     impressions = math.ceil(len(pages) / pages_per_sheet) if pages else 0
     sheets_per_copy = math.ceil(impressions / 2) if two_sided else impressions
 

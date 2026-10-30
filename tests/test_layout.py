@@ -106,7 +106,7 @@ def test_six_up_grid_is_three_by_two_on_a_landscape_sheet() -> None:
 
 def test_duplex_pairs_sides_and_counts_sheets_per_copy() -> None:
     pages = [PageBox(number, 595, 842) for number in range(1, 6)]
-    plan = plan_layout(pages, A4, duplex="long-edge", copies=3)
+    plan = plan_layout(pages, A4, two_sided=True, copies=3)
 
     assert [(side["sheet"], side["face"]) for side in plan["sides"]] == [  # type: ignore[union-attr]
         (1, "front"), (1, "back"), (2, "front"), (2, "back"), (3, "front"),
