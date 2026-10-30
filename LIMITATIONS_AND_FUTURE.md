@@ -195,8 +195,10 @@ Known behavior:
 * Standard IPP job attributes that the queue advertises (`sides`,
   `print-color-mode`, `print-quality`, `number-up`, `print-scaling`,
   `page-delivery`, collated copies) are preferred over PPD options. CUPS then
-  applies its own driver presets: on the MG5350 queue, normal and high quality
-  become Gutenprint's automatic mode with normal or best colour precision.
+  applies its own driver presets: on the MG5350 queue, normal quality becomes
+  Gutenprint's automatic mode. That preset alone printed high quality the same
+  as normal, so high also selects the driver's HIGH mode for the paper and
+  sides (plain, two-sided/envelope, or photo).
 * `quality=high` never selects a Gutenprint pseudo-resolution such as
   `612x600dpi` (T-shirt mode) or `605x600dpi` (photo mode); those stay
   reachable through the advanced `Resolution` option.

@@ -253,3 +253,22 @@ def test_preview_list_reports_page_sizes_for_layout(client: TestClient) -> None:
 
     assert [(page["width_pt"], page["height_pt"]) for page in pages] == [(300.0, 842.0), (842.0, 842.0)]
     assert pages[0]["thumb_url"] == f"/files/{file_id}/preview/1?size=thumb"
+
+
+@pytest.mark.parametrize(("options", "resolution"), [
+    ({"quality": "high"}, "600dpi"),
+    ({"quality": "high", "media_type": "glossy"}, "605x600dpi"),
+    # The excerpt has no duplex HIGH mode, so CUPS's preset alone applies.
+    ({"quality": "high", "duplex": "long-edge"}, None),
+    ({"quality": "high", "advanced": {"Resolution": "300dpi"}}, "300dpi"),
+    ({"quality": "normal"}, None),
+])
+def test_high_quality_selects_the_driver_high_mode(
+    client: TestClient, options: dict[str, object], resolution: str | None,
+) -> None:
+    file_id = upload(client, numbered_pdf([100]))
+
+    applied = client.post("/print/validate", json={"file_id": file_id, "options": options}).json()["applied_options"]
+
+    assert applied.get("Resolution") == resolution
+    assert applied["print-quality"] == ("5" if options["quality"] == "high" else "4")

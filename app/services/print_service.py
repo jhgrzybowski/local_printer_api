@@ -11,13 +11,19 @@ from app.services.cups_client import CupsClient, CupsClientError, PrinterProfile
 from app.services.file_storage import StoredFile, TempFileStorage
 from app.services.layout import PageBox, Paper, plan_layout
 from app.services.page_filter import PageRangeError, parse_page_ranges, select_pages, write_pdf_pages
-from app.services.ppd import paper_size
+from app.services.ppd import PpdInfo, paper_size
 from app.services.preview import PreviewError, PreviewService
 from app.services.printer_reachability import PROBE_FRESH_SECONDS
 from app.services.status_translator import translate_queue_status
 
 IMAGE_MIME_TYPES = {"image/png", "image/jpeg"}
 PAGE_RANGE_TEXT_RE = re.compile(r"^\s*\d+(?:\s*-\s*\d+)?(?:\s*,\s*\d+(?:\s*-\s*\d+)?)*\s*$")
+# Gutenprint's Canon driver names its print modes in Resolution labels, such
+# as "600x600 DPI HIGH" (plain paper) or "600x600 DPI PHOTO HIGH".
+PLAIN_HIGH_MODE_RE = re.compile(r"^\d+x\d+ DPI HIGH$")
+PHOTO_HIGH_MODE_RE = re.compile(r"^\d+x\d+ DPI PHOTO HIGH$")
+DUPLEX_HIGH_MODE_RE = re.compile(r"^\d+x\d+ DPI HIGH duplex\b")
+PHOTO_MEDIA_RE = re.compile(r"photo|gloss|matte|coated", re.IGNORECASE)
 
 
 class PrintRequestError(ValueError):
@@ -152,8 +158,36 @@ def map_options(
         applied.pop("print-scaling", None)
         unsupported.append("scale_percent")
         warnings.append("Dropped scale_percent because custom scaling needs a PDF document")
+    if options.quality == "high" and applied.get("print-quality") == "5" and "Resolution" not in applied:
+        mode = _driver_high_mode(profile.ppd, applied)
+        if mode is not None:
+            applied["Resolution"] = mode
     conflicts = profile.ppd.conflicts(applied) if profile.ppd is not None else []
     return CupsOptionMapping(applied, unsupported, warnings), conflicts
+
+
+def _driver_high_mode(ppd: PpdInfo | None, applied: dict[str, str]) -> str | None:
+    """Pick the driver's high-quality mode for this paper and sides.
+
+    CUPS's preset for print-quality=high only raises colour precision on the
+    MG5350, which printed the same as normal. The driver's HIGH modes are
+    what its own high-quality setting uses.
+    """
+    resolution = ppd.options.get("Resolution") if ppd is not None else None
+    if resolution is None:
+        return None
+    media_option = ppd.options.get("MediaType") if ppd is not None else None
+    media = applied.get("MediaType") or (media_option.default if media_option else None) or "Plain"
+    two_sided = applied.get("sides", "one-sided") != "one-sided" or applied.get("Duplex", "None") != "None"
+    if PHOTO_MEDIA_RE.search(media):
+        pattern = PHOTO_HIGH_MODE_RE
+    elif two_sided or media.lower() in {"envelope", "hagaki"}:
+        pattern = DUPLEX_HIGH_MODE_RE
+    elif media.lower() == "plain":
+        pattern = PLAIN_HIGH_MODE_RE
+    else:
+        return None
+    return next((choice.value for choice in resolution.choices if pattern.search(choice.label)), None)
 
 
 def submit_print_job(
