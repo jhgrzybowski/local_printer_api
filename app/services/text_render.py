@@ -88,17 +88,32 @@ def _paginate(text: str, columns: int, rows: int) -> list[list[str]]:
         if len(lines) > 1 and lines[-1] == "":
             lines.pop()  # a final newline ends the last line
         for raw_line in lines:
-            line = _expand_tabs(raw_line)
-            for start in range(0, max(len(line), 1), columns):
+            for row in _wrap(_expand_tabs(raw_line), columns):
                 if len(pages[-1]) == rows:
                     pages.append([])
                     if len(pages) > MAX_PAGES:
                         raise TextRenderError(f"Text is longer than {MAX_PAGES} pages")
-                pages[-1].append(line[start:start + columns])
+                pages[-1].append(row)
     # A trailing newline does not start an extra blank page.
     while len(pages) > 1 and not any(pages[-1]):
         pages.pop()
     return pages
+
+
+def _wrap(line: str, columns: int) -> list[str]:
+    """Break at the last space that fits, as a browser does; split only
+    words longer than a whole line."""
+    rows = []
+    while len(line) > columns:
+        cut = line.rfind(" ", 0, columns + 1)
+        if cut <= 0:
+            rows.append(line[:columns])
+            line = line[columns:]
+        else:
+            rows.append(line[:cut])
+            line = line[cut + 1:]
+    rows.append(line)
+    return rows
 
 
 def _expand_tabs(line: str) -> str:

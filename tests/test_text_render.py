@@ -17,6 +17,18 @@ def test_pagination_wraps_expands_tabs_and_breaks_on_form_feed() -> None:
     assert len(pages) == 2
 
 
+def test_long_lines_wrap_between_words() -> None:
+    line = "A long line that is wider than eighty columns should wrap onto the next line rather than being cut off."
+
+    rows = text_render._paginate(line, columns=80, rows=60)[0]
+
+    assert rows == [
+        "A long line that is wider than eighty columns should wrap onto the next line",
+        "rather than being cut off.",
+    ]
+    assert text_render._wrap("  indented " + "y" * 90, 40) == ["  indented", "y" * 40, "y" * 40, "y" * 10]
+
+
 def test_pagination_fills_pages_without_a_trailing_blank_page() -> None:
     exact = text_render._paginate("\n".join(str(n) for n in range(1, 121)) + "\n", columns=80, rows=60)
     over = text_render._paginate("\n".join(str(n) for n in range(1, 122)), columns=80, rows=60)
