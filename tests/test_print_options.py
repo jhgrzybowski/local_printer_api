@@ -273,8 +273,21 @@ MG5350_QUEUE = {
     "page-delivery": {"reverse-order", "same-order"},
     "print-scaling": {"auto", "auto-fit", "fill", "fit", "none"},
     "media-source": {"auto", "rear", "main", "continuous", "cd"},
+    "orientation-requested": {"3", "4", "5", "6"},
     "collate": {"true", "false"},
 }
+
+
+def test_orientation_uses_cups_layout_attribute_when_advertised() -> None:
+    # pdftopdf ignores StpOrientation, so pages per sheet would be laid out
+    # as if no orientation were set.
+    mapped = PrintOptions(orientation="landscape", pages_per_sheet=2).to_cups_options(MG5350_QUEUE)
+
+    assert mapped.applied_options["orientation-requested"] == "4"
+    assert "StpOrientation" not in mapped.applied_options
+    summary = build_options_summary("Canon_MG5350", MG5350_QUEUE)["orientation"]
+    assert summary["raw_option"] == "orientation-requested"
+    assert summary["choices"] == ["portrait", "landscape", "reverse-landscape", "reverse-portrait"]
 
 
 def test_print_dialog_options_map_to_standard_cups_attributes() -> None:

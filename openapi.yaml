@@ -263,7 +263,7 @@ paths:
       tags:
       - Print
       summary: Validate a print request without submitting it
-      description: Uses the same page selection and option mapper as /print, without writing any file, so a
+      description: Uses the same page selection and option mapper as /print, without spooling a print file, so a
         print dialog can call it on every settings change. valid means all requested options are supported and
         no driver constraint conflicts. layout plans how the selected pages land on sheets. ready_for_print is a
         live queue snapshot; a printer that is switched off is detected within seconds without delaying the reply.
@@ -2018,6 +2018,9 @@ components:
           type: integer
         total_sheets:
           type: integer
+        reverse_order:
+          type: boolean
+          description: Sheets come out last to first. sides stay in reading order.
         sides:
           type: array
           items:

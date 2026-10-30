@@ -169,6 +169,19 @@ class _OptionMapper:
         applied: dict[str, str],
         warnings: list[str],
     ) -> None:
+        standard_values = {
+            "portrait": "3",
+            "landscape": "4",
+            "reverse-landscape": "5",
+            "reverse-portrait": "6",
+        }
+        # CUPS lays out pages (and pages per sheet) with orientation-requested.
+        # A driver rotation such as Gutenprint's StpOrientation happens after
+        # that layout, so it is only the fallback.
+        if self._supports("orientation-requested", standard_values[value]):
+            applied["orientation-requested"] = standard_values[value]
+            return
+
         ppd_values = {
             "portrait": "Portrait",
             "landscape": "Landscape",
@@ -180,12 +193,6 @@ class _OptionMapper:
             warnings.append("Mapped orientation through detected PPD StpOrientation option")
             return
 
-        standard_values = {
-            "portrait": "3",
-            "landscape": "4",
-            "reverse-landscape": "5",
-            "reverse-portrait": "6",
-        }
         applied["orientation-requested"] = standard_values[value]
         if self.capabilities and "orientation-requested" not in self.capabilities:
             warnings.append("Applied standard orientation-requested option without detected queue support")

@@ -211,7 +211,7 @@ def validate_print_job(
 ) -> dict[str, object]:
     """Dry-run a print: same checks and mapping, plus the sheet layout.
 
-    Nothing is written; a print dialog calls this on every settings change.
+    No print file is spooled; a print dialog calls this on every settings change.
     """
     if not storage.printable_path(record).exists():
         raise PrintRequestError("Stored file is missing", 404)
@@ -290,6 +290,7 @@ def build_layout(
         duplex=options.duplex if "duplex" not in dropped else None,
         copies=options.copies,
         borderless=bool(options.borderless) and "borderless" not in dropped,
+        reverse_order=applied.get("page-delivery") == "reverse-order",
     )
 
 

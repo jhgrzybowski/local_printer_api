@@ -173,6 +173,17 @@ def _orientation_modes(capabilities: dict[str, set[str]]) -> dict[str, Any]:
         "reverse-landscape": "5",
         "reverse-portrait": "6",
     }
+    if "orientation-requested" in capabilities:
+        return {
+            "api_name": "orientation",
+            "raw_option": "orientation-requested",
+            "supported": True,
+            "choices": [
+                api_value for api_value, raw_value in mapping.items()
+                if _supports(capabilities, "orientation-requested", raw_value)
+            ],
+            "mapping": mapping,
+        }
     if "StpOrientation" in capabilities:
         raw_mapping = {
             "portrait": "Portrait",

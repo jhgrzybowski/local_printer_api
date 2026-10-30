@@ -122,3 +122,11 @@ def test_margins_shrink_the_fit_area_unless_borderless() -> None:
 
     assert framed["height"] == pytest.approx(770 / 842, abs=1e-3)
     assert borderless["height"] == 1.0
+
+
+def test_reverse_delivery_keeps_reading_order() -> None:
+    pages = [PageBox(number, 595, 842) for number in range(1, 4)]
+    plan = plan_layout(pages, A4, reverse_order=True)
+
+    assert plan["reverse_order"] is True
+    assert [side["cells"][0]["page"] for side in plan["sides"]] == [1, 2, 3]  # type: ignore[union-attr]

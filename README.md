@@ -335,7 +335,7 @@ curl -b cookies.txt -s -X POST "$PRINTER_BACKEND/print" \
 
 ### Print-dialog settings
 
-`POST /print/validate` takes the same body as `/print`, writes nothing, and
+`POST /print/validate` takes the same body as `/print`, spools no print file, and
 returns a `layout` that places each selected page on a sheet side. Call it on
 every settings change and draw the preview from the cached page images:
 

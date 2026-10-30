@@ -308,3 +308,78 @@ def test_preview_is_published_only_after_png_write_completes(tmp_path: Path) -> 
 
     assert destination.read_bytes() == b"complete"
     assert not list(tmp_path.glob(".page-1-*.png"))
+
+
+def test_oversized_pdf_pages_are_capped_inside_poppler(
+    file_client: TestClient, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from PIL import Image
+    from app.services import preview
+
+    calls: list[bool] = []
+
+    def render_page(source: Path, page: int, **kwargs: object) -> Image.Image:
+        calls.append(bool(kwargs["exact"]))
+        return Image.new("RGB", (4, 4), color="white")
+
+    monkeypatch.setattr(preview, "render_pdf_page", render_page)
+    writer = PdfWriter()
+    writer.add_blank_page(width=595, height=842)  # A4 renders at PREVIEW_DPI
+    writer.add_blank_page(width=2384, height=3370)  # A0 would be 3641x5148 px
+    buffer = BytesIO()
+    writer.write(buffer)
+    file_id = file_client.post(
+        "/files", files={"file": ("mixed.pdf", buffer.getvalue(), "application/pdf")},
+    ).json()["file_id"]
+
+    assert file_client.get(f"/files/{file_id}/preview/1").status_code == 200
+    assert file_client.get(f"/files/{file_id}/preview/2").status_code == 200
+    assert calls == [False, True]
+
+
+def test_concurrent_image_previews_render_once(
+    file_client: TestClient, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    from app.services.preview import PreviewService
+
+    calls: list[int] = []
+    release = threading.Event()
+    original = PreviewService._render_image
+
+    def slow_render(self: PreviewService, source: Path, output: Path, dimension: int) -> Path:
+        calls.append(dimension)
+        release.wait(2)
+        return original(self, source, output, dimension)
+
+    monkeypatch.setattr(PreviewService, "_render_image", slow_render)
+    file_id = file_client.post(
+        "/files", files={"file": ("image.png", make_png(), "image/png")},
+    ).json()["file_id"]
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [pool.submit(file_client.get, f"/files/{file_id}/preview") for _ in range(4)]
+        threading.Timer(0.3, release.set).start()
+        statuses = [future.result().status_code for future in futures]
+
+    assert statuses == [200, 200, 200, 200]
+    assert len(calls) == 1
+
+
+def test_unwritable_geometry_cache_does_not_fail_validation(
+    file_client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services import preview
+
+    def fail_write(destination: Path, data: bytes) -> None:
+        raise PermissionError("read-only preview directory")
+
+    monkeypatch.setattr(preview, "_write_atomic", fail_write)
+    file_id = file_client.post(
+        "/files", files={"file": ("two.pdf", make_pdf(2), "application/pdf")},
+    ).json()["file_id"]
+
+    listing = file_client.get(f"/files/{file_id}/preview")
+
+    assert listing.status_code == 200
+    assert listing.json()["pages"][0]["width_pt"] == 72.0

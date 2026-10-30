@@ -47,6 +47,7 @@ def plan_layout(
     duplex: str | None = None,
     copies: int = 1,
     borderless: bool = False,
+    reverse_order: bool = False,
 ) -> dict[str, object]:
     pages_per_sheet = pages_per_sheet if pages_per_sheet in NUP_GRID else 1
     mode = "custom" if scale_percent is not None else (scaling or "auto")
@@ -79,6 +80,9 @@ def plan_layout(
         "copies": copies,
         # Each two-sided copy starts on a fresh sheet, as CUPS prints it.
         "total_sheets": sheets_per_copy * copies,
+        # Sides stay in reading order for the preview; with reverse delivery
+        # the printer outputs the last sheet first.
+        "reverse_order": reverse_order,
         "sides": sides,
     }
 

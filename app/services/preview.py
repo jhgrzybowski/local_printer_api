@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import os
 import subprocess
 import tempfile
@@ -22,6 +23,7 @@ PREVIEW_SIZES = ("full", "thumb")
 # zlib level 1 encodes rendered pages several times faster than the default 6;
 # text pages come out about the same size and scans roughly 10% larger.
 PNG_COMPRESS_LEVEL = 1
+LOGGER = logging.getLogger(__name__)
 
 # A browser asks for many pages at once. Bound the renderers so a long
 # document cannot start dozens of poppler processes on a small server.
@@ -92,7 +94,11 @@ class PreviewService:
             raise PreviewError("Stored file is missing", 404)
 
         if record.detected_mime in {"image/png", "image/jpeg"}:
-            return [self._render_image(source, paths[0], PREVIEW_MAX_DIMENSION)]
+            with _page_lock(paths[0]):
+                if not paths[0].exists():
+                    with _render_slots:
+                        self._render_image(source, paths[0], PREVIEW_MAX_DIMENSION)
+            return paths
 
         raise PreviewError("Preview is not available for this file type", 400)
 
@@ -117,12 +123,26 @@ class PreviewService:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 with _render_slots:
                     if record.printable_mime == "application/pdf":
-                        self._render_pdf(source, path, page, size)
+                        self._render_pdf(record, path, page, size)
                     elif record.detected_mime in {"image/png", "image/jpeg"}:
                         self._render_image(source, path, dimension)
         if not path.exists():
             raise PreviewError("Preview page not found", 404)
         return path
+
+    def _exceeds_max_dimension(self, record: StoredFile, page: int) -> bool:
+        """Whether PREVIEW_DPI would exceed the cap, so poppler must scale.
+
+        Capping inside poppler keeps a poster-sized page from rasterizing
+        tens of megabytes of pixels first. Unknown sizes are capped too.
+        """
+        try:
+            geometry = self.page_geometry(record) or []
+            size = geometry[page - 1]
+            long_side = max(float(size["width_pt"]), float(size["height_pt"]))
+        except (PreviewError, IndexError, KeyError, TypeError, ValueError):
+            return True
+        return long_side * self.dpi / 72 > PREVIEW_MAX_DIMENSION
 
     def page_geometry(self, record: StoredFile) -> list[dict[str, float]] | None:
         """Displayed page sizes in points, cached beside the previews."""
@@ -145,15 +165,19 @@ class PreviewService:
             raise
         except Exception as exc:
             raise PreviewError(f"Unable to read page sizes: {exc}", 400) from exc
-        cache.parent.mkdir(parents=True, exist_ok=True)
-        _write_atomic(cache, json.dumps(geometry).encode())
+        try:
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            _write_atomic(cache, json.dumps(geometry).encode())
+        except OSError as exc:
+            # The cache only saves rereading the PDF next time.
+            LOGGER.warning("Could not cache page sizes for %s: %s", record.file_id, exc)
         return geometry
 
-    def _render_pdf(self, source: Path, destination: Path, page: int, size: str) -> None:
-        exact = size == "thumb"
+    def _render_pdf(self, record: StoredFile, destination: Path, page: int, size: str) -> None:
+        exact = size == "thumb" or self._exceeds_max_dimension(record, page)
         image = render_pdf_page(
-            source, page, dpi=self.dpi,
-            max_dimension=PREVIEW_THUMB_DIMENSION if exact else PREVIEW_MAX_DIMENSION,
+            self.storage.printable_path(record), page, dpi=self.dpi,
+            max_dimension=PREVIEW_THUMB_DIMENSION if size == "thumb" else PREVIEW_MAX_DIMENSION,
             exact=exact,
         )
         try:
