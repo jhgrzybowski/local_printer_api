@@ -38,11 +38,17 @@ def test_pagination_fills_pages_without_a_trailing_blank_page() -> None:
     assert [len(page) for page in over] == [60, 60, 1]
 
 
-def test_very_long_text_is_left_to_cups(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_tabs_stop_at_every_eighth_column() -> None:
+    assert text_render._expand_tabs("a\tb\tc") == "a       b       c"
+    assert text_render._expand_tabs("\tone tab\ttwo") == " " * 8 + "one tab" + " " + "two"
+
+
+@pytest.mark.parametrize("text", ["line\n" * 500, "x\f" * 3 + "x"])
+def test_very_long_text_is_left_to_cups(monkeypatch: pytest.MonkeyPatch, text: str) -> None:
     monkeypatch.setattr(text_render, "MAX_PAGES", 2)
 
     with pytest.raises(TextRenderError):
-        text_render._paginate("line\n" * 500, columns=80, rows=60)
+        text_render._paginate(text, columns=80, rows=60)
 
 
 def test_rendered_pdf_embeds_the_font_and_keeps_text(tmp_path: Path) -> None:

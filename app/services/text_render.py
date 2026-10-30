@@ -81,18 +81,22 @@ def render_text_pdf(source: Path, destination: Path, font_path: Path) -> int:
 
 def _paginate(text: str, columns: int, rows: int) -> list[list[str]]:
     pages: list[list[str]] = [[]]
+
+    def new_page() -> None:
+        if len(pages) >= MAX_PAGES:
+            raise TextRenderError(f"Text is longer than {MAX_PAGES} pages")
+        pages.append([])
+
     for block in text.replace("\r\n", "\n").replace("\r", "\n").split("\f"):
         if pages[-1]:
-            pages.append([])
+            new_page()
         lines = block.split("\n")
         if len(lines) > 1 and lines[-1] == "":
             lines.pop()  # a final newline ends the last line
         for raw_line in lines:
             for row in _wrap(_expand_tabs(raw_line), columns):
                 if len(pages[-1]) == rows:
-                    pages.append([])
-                    if len(pages) > MAX_PAGES:
-                        raise TextRenderError(f"Text is longer than {MAX_PAGES} pages")
+                    new_page()
                 pages[-1].append(row)
     # A trailing newline does not start an extra blank page.
     while len(pages) > 1 and not any(pages[-1]):
@@ -118,11 +122,15 @@ def _wrap(line: str, columns: int) -> list[str]:
 
 def _expand_tabs(line: str) -> str:
     out: list[str] = []
+    column = 0
     for character in line:
         if character == "\t":
-            out.append(" " * (TAB_SIZE - len(out) % TAB_SIZE))
-        elif character >= " " or character == " ":
+            width = TAB_SIZE - column % TAB_SIZE
+            out.append(" " * width)
+            column += width
+        elif character >= " ":
             out.append(character)
+            column += 1
     return "".join(out)
 
 
