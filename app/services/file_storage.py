@@ -22,6 +22,7 @@ from app.services.mime_detection import SUPPORTED_MIME_TYPES, detect_mime
 from app.services.office_conversion import ConversionError, OfficeConverter
 from app.services.office_formats import OfficeFormatError, OFFICE_FORMATS, inspect_office
 from app.services.pdf_metadata import PdfMetadataError, get_pdf_page_count
+from app.services.text_render import TextRenderError, find_text_font, render_text_pdf
 from app.settings import MAX_IMAGE_PIXELS, MAX_UPLOAD_MB, TMP_DIR
 
 
@@ -133,6 +134,8 @@ class TempFileStorage:
                 if detected_mime not in SUPPORTED_MIME_TYPES:
                     raise StorageError(f"Unsupported MIME type: {detected_mime}", 415)
                 page_count = self._page_count(file_path, detected_mime)
+                if detected_mime == "text/plain":
+                    page_count, converted, warnings = self._render_text(file_id)
                 if detected_mime in {"image/png", "image/jpeg"}:
                     from PIL import Image
                     try:
@@ -167,6 +170,23 @@ class TempFileStorage:
             if isinstance(exc, ConversionError):
                 raise StorageError(exc.message, exc.status_code) from exc
             raise
+
+    def _render_text(self, file_id: str) -> tuple[int | None, bool, tuple[str, ...]]:
+        """Lay out text as a PDF for preview and printing, when a font allows.
+
+        Without a font, or for very long text, CUPS paginates it as before:
+        no preview, and only Latin-1 letters print correctly.
+        """
+        font = find_text_font()
+        if font is None:
+            return None, False, ("No Unicode font is installed; text prints without a preview.",)
+        destination = self.converted_path(file_id)
+        try:
+            self.converted_dir.mkdir(parents=True, exist_ok=True)
+            return render_text_pdf(self.file_path(file_id), destination, font), True, ()
+        except (TextRenderError, OSError) as exc:
+            destination.unlink(missing_ok=True)
+            return None, False, (f"Text prints without a preview: {exc}",)
 
     def converted_path(self, file_id: str) -> Path:
         return self.converted_dir / f"{file_id}.pdf"

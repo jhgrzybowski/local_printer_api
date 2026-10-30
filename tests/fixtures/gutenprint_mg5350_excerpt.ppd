@@ -1,0 +1,189 @@
+*PPD-Adobe: "4.3"
+*% PPD file for CUPS/Gutenprint.
+*% Copyright 1993-2008 by Mike Sweet and Robert Krawitz.
+*% This program is free software; you can redistribute it and/or
+*% modify it under the terms of the GNU General Public License,
+*% either version 2, or (at your option) any later version,
+*% as published by the Free Software Foundation.
+*%
+*% This program is distributed in the hope that it will be useful, but
+*% WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
+*% or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
+*% for more details.
+*%
+*% You should have received a copy of the GNU General Public License
+*% along with this program.  If not, see <https://www.gnu.org/licenses/>.
+*%
+*FormatVersion:	"4.3"
+*FileVersion:	"5.3.4"
+*LanguageVersion: English
+*LanguageEncoding: ISOLatin1
+*PCFileName:	"STP00573.PPD"
+*Manufacturer:	"Canon"
+*ModelName:     "Canon PIXMA MG5350"
+*ShortNickName: "Canon PIXMA MG5350"
+*NickName:      "Canon PIXMA MG5350 - CUPS+Gutenprint v5.3.4"
+*PSVersion:	"(3010.000) 0"
+*LanguageLevel:	"3"
+*ColorDevice:	True
+*DefaultColorSpace:	RGB
+*cupsManualCopies: True
+*FileSystem:	False
+*LandscapeOrientation: Plus90
+
+
+*OpenUI *PageSize/Media Size: PickOne
+*OPOptionHints PageSize: "dropdown"
+*OrderDependency: 10 AnySetup *PageSize
+*StpStpPageSize: 0 1 2 0 255 0.000 0.000 0.000
+*DefaultPageSize: Letter
+*StpDefaultPageSize: Letter
+*PageSize Letter/Letter:	"<</PageSize[612.000 792.000]/ImagingBBox null>>setpagedevice"
+*PageSize w288h432/4x6:	"<</PageSize[288.000 432.000]/ImagingBBox null>>setpagedevice"
+*PageSize A4/A4:	"<</PageSize[595.000 842.000]/ImagingBBox null>>setpagedevice"
+*CloseUI: *PageSize
+*DefaultImageableArea: Letter
+*ImageableArea Letter/Letter:	"0.000 0.000 612.000 792.000"
+*ImageableArea w288h432/4x6:	"0.000 0.000 288.000 432.000"
+*ImageableArea A4/A4:	"0.000 0.000 595.000 842.000"
+*DefaultPaperDimension: Letter
+*PaperDimension Letter/Letter:	"612.000 792.000"
+*PaperDimension w288h432/4x6:	"288.000 432.000"
+*PaperDimension A4/A4:	"595.000 842.000"
+*OpenUI *ColorModel/Color Model: PickOne
+*OPOptionHints ColorModel: "radiobuttons"
+*OrderDependency: 2 AnySetup *ColorModel
+*DefaultColorModel: RGB
+*StpDefaultColorModel: RGB
+*ColorModel Gray/Grayscale:	"<</cupsColorSpace 0/cupsColorOrder 0>>setpagedevice"
+*ColorModel Black/Inverted Grayscale:	"<</cupsColorSpace 3/cupsColorOrder 0>>setpagedevice"
+*ColorModel RGB/RGB Color:	"<</cupsColorSpace 1/cupsColorOrder 0>>setpagedevice"
+*ColorModel CMY/CMY Color:	"<</cupsColorSpace 4/cupsColorOrder 0>>setpagedevice"
+*ColorModel CMYK/CMYK:	"<</cupsColorSpace 6/cupsColorOrder 0>>setpagedevice"
+*ColorModel KCMY/KCMY:	"<</cupsColorSpace 8/cupsColorOrder 0>>setpagedevice"
+*CloseUI: *ColorModel
+*OpenUI *StpColorPrecision/Color Precision: PickOne
+*OPOptionHints StpColorPrecision: "radiobuttons"
+*OrderDependency: 1 AnySetup *StpColorPrecision
+*DefaultStpColorPrecision: Normal
+*StpDefaultStpColorPrecision: Normal
+*StpColorPrecision Normal/Normal:	"<</cupsBitsPerColor 8>>setpagedevice"
+*StpColorPrecision Best/Best:	"<</cupsBitsPerColor 8/cupsPreferredBitsPerColor 16>>setpagedevice"
+*CloseUI: *StpColorPrecision
+*OpenUI *MediaType/Media Type: PickOne
+*OPOptionHints MediaType: "dropdown"
+*OrderDependency: 10 AnySetup *MediaType
+*StpStpMediaType: 0 1 0 0 255 0.000 0.000 0.000
+*DefaultMediaType: Plain
+*StpDefaultMediaType: Plain
+*MediaType Plain/Plain Paper:	"<</MediaType(Plain)>>setpagedevice"
+*MediaType PhotoPlusGloss2/Photo Paper Plus Glossy II:	"<</MediaType(PhotoPlusGloss2)>>setpagedevice"
+*MediaType GlossyPaper/Glossy Photo Paper:	"<</MediaType(GlossyPaper)>>setpagedevice"
+*MediaType PhotopaperMatte/Matte Photo Paper:	"<</MediaType(PhotopaperMatte)>>setpagedevice"
+*CloseUI: *MediaType
+*OpenUI *InputSlot/Media Source: PickOne
+*OPOptionHints InputSlot: "dropdown"
+*OrderDependency: 10 AnySetup *InputSlot
+*StpStpInputSlot: 0 1 0 0 255 0.000 0.000 0.000
+*DefaultInputSlot: AutoSwitch
+*StpDefaultInputSlot: AutoSwitch
+*InputSlot AutoSwitch/Automatic Paper Source Switching:	"<</MediaClass(AutoSwitch)>>setpagedevice"
+*InputSlot Rear/Rear tray:	"<</MediaClass(Rear)>>setpagedevice"
+*InputSlot Cassette/Cassette:	"<</MediaClass(Cassette)>>setpagedevice"
+*InputSlot Continuous/Continuous Autofeed:	"<</MediaClass(Continuous)>>setpagedevice"
+*InputSlot CD/CD tray:	"<</MediaClass(CD)>>setpagedevice"
+*CloseUI: *InputSlot
+*OpenUI *StpQuality/Print Quality: PickOne
+*OPOptionHints Quality: "dropdown"
+*OrderDependency: 10 AnySetup *StpQuality
+*StpStpQuality: 0 1 0 0 255 0.000 0.000 0.000
+*DefaultStpQuality: Standard
+*StpDefaultStpQuality: Standard
+*StpQuality None/Manual Control:	"<</HWResolution[600 600]/cupsRowFeed 1>>setpagedevice"
+*StpQuality Standard/Standard:	"<</HWResolution[600 600]/cupsRowFeed 2>>setpagedevice"
+*CloseUI: *StpQuality
+*OpenUI *Resolution/Resolution: PickOne
+*OPOptionHints Resolution: "resolution radiobuttons"
+*OrderDependency: 10 AnySetup *Resolution
+*StpStpResolution: 0 1 0 0 255 0.000 0.000 0.000
+*DefaultResolution: 601x600dpi
+*StpDefaultResolution: 601x600dpi
+*Resolution 601x600dpi/Automatic:	"<</HWResolution[600 600]>>setpagedevice"
+*StpResolutionMap: 601x600dpi None
+*Resolution 600dpi/600x600 DPI HIGH:	"<</HWResolution[600 600]/cupsCompression 1>>setpagedevice"
+*StpResolutionMap: 600dpi 600x600dpi_high
+*Resolution 603x600dpi/600x600 DPI HIGH duplex/Env/Hagaki:	"<</HWResolution[600 600]/cupsCompression 3>>setpagedevice"
+*StpResolutionMap: 603x600dpi 600x600dpi_high2
+*Resolution 300dpi/300x300 DPI:	"<</HWResolution[300 300]/cupsCompression 5>>setpagedevice"
+*StpResolutionMap: 300dpi 300x300dpi
+*Resolution 605x600dpi/600x600 DPI PHOTO HIGH:	"<</HWResolution[600 600]/cupsCompression 6>>setpagedevice"
+*StpResolutionMap: 605x600dpi 600x600dpi_photohigh
+*Resolution 612x600dpi/600x600 DPI T-SHIRT:	"<</HWResolution[600 600]/cupsCompression 13>>setpagedevice"
+*StpResolutionMap: 612x600dpi 600x600dpi_tshirt
+*CloseUI: *Resolution
+*OpenUI *Duplex/2-Sided Printing: PickOne
+*OPOptionHints Duplex: "radiobuttons"
+*OrderDependency: 10 AnySetup *Duplex
+*StpStpDuplex: 0 1 0 0 255 0.000 0.000 0.000
+*DefaultDuplex: None
+*StpDefaultDuplex: None
+*Duplex None/Off: "<</Duplex false>>setpagedevice"
+*Duplex DuplexNoTumble/Long Edge (Standard): "<</Duplex true/Tumble false>>setpagedevice"
+*Duplex DuplexTumble/Short Edge (Flip): "<</Duplex true/Tumble true>>setpagedevice"
+*CloseUI: *Duplex
+*OpenUI *StpiShrinkOutput/Shrink Page If Necessary to Fit Borders: PickOne
+*OPOptionHints StpiShrinkOutput: "radiobuttons"
+*OrderDependency: 10 AnySetup *StpiShrinkOutput
+*DefaultStpiShrinkOutput: Shrink
+*StpDefaultStpiShrinkOutput: Shrink
+*StpiShrinkOutput Shrink/Shrink (print the whole page): ""
+*StpiShrinkOutput Crop/Crop (preserve dimensions): ""
+*StpiShrinkOutput Expand/Expand (use maximum page area): ""
+*CloseUI: *StpiShrinkOutput
+*OpenGroup: C0L0/Printer Features Common
+*OpenUI *StpFullBleed/Borderless: PickOne
+*OrderDependency: 10 AnySetup *StpFullBleed
+*OPOptionHints StpFullBleed: "checkbox"
+*StpStpFullBleed: 2 1 0 0 255 0.000 0.000 0.000
+*DefaultStpFullBleed: False
+*StpDefaultStpFullBleed: False
+*StpFullBleed False/No: ""
+*StpFullBleed True/Yes: ""
+*CloseUI: *StpFullBleed
+*OpenUI *StpOrientation/Orientation: PickOne
+*OrderDependency: 10 AnySetup *StpOrientation
+*OPOptionHints StpOrientation: "dropdown"
+*StpStpOrientation: 0 1 0 0 255 0.000 0.000 0.000
+*DefaultStpOrientation: Portrait
+*StpDefaultStpOrientation: Portrait
+*StpOrientation Portrait/Portrait: ""
+*StpOrientation Landscape/Landscape: ""
+*StpOrientation UpsideDown/Reverse Portrait: ""
+*StpOrientation Seascape/Reverse Landscape: ""
+*CloseUI: *StpOrientation
+*CloseGroup: C0L0/Printer Features Common
+*OpenGroup: C0L1/Printer Features Extra 1
+*CloseGroup: C0L1/Printer Features Extra 1
+*OpenGroup: C1L0/Output Control Common
+*OpenUI *StpImageType/Image Type: PickOne
+*OrderDependency: 10 AnySetup *StpImageType
+*OPOptionHints StpImageType: "dropdown"
+*StpStpImageType: 0 1 1 0 255 0.000 0.000 0.000
+*DefaultStpImageType: TextGraphics
+*StpDefaultStpImageType: TextGraphics
+*StpImageType None/Manual Control: ""
+*StpImageType Text/Text: ""
+*StpImageType Graphics/Graphics: ""
+*StpImageType TextGraphics/Mixed Text and Graphics: ""
+*StpImageType Photo/Photograph: ""
+*StpImageType LineArt/Line Art: ""
+*CloseUI: *StpImageType
+*CloseGroup: C1L0/Output Control Common
+*OpenGroup: C1L1/Output Control Extra 1
+*CloseGroup: C1L1/Output Control Extra 1
+*OpenGroup: C1L2/Output Control Extra 2
+*CloseGroup: C1L2/Output Control Extra 2
+*OpenGroup: C1L4/Output Control Extra 4
+*CloseGroup: C1L4/Output Control Extra 4
+*OpenGroup: C1L5/Output Control Extra 5
+*CloseGroup: C1L5/Output Control Extra 5

@@ -4,13 +4,20 @@ from dataclasses import dataclass
 import re
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 Orientation = Literal["portrait", "landscape", "reverse-landscape", "reverse-portrait"]
 ColorMode = Literal["monochrome", "color", "auto"]
 DuplexMode = Literal["none", "long-edge", "short-edge"]
 Quality = Literal["draft", "normal", "high"]
+PageSet = Literal["all", "odd", "even"]
+PagesPerSheet = Literal[1, 2, 4, 6, 9, 16]
+PagesPerSheetLayout = Literal["lrtb", "lrbt", "rltb", "rlbt", "tblr", "tbrl", "btlr", "btrl"]
+PageBorder = Literal["none", "single", "single-thick", "double", "double-thick"]
+Scaling = Literal["auto", "auto-fit", "fit", "fill", "none"]
+# Choosing paper size here keeps the layout preview and the job in agreement.
+ADVANCED_RESERVED_OPTIONS = frozenset({"PageSize", "PageRegion"})
 
 
 @dataclass(frozen=True)
@@ -33,6 +40,29 @@ class PrintOptions(BaseModel):
     collate: bool | None = None
     media_type: str | None = None
     fit_to_page: bool | None = None
+    # Print-dialog settings beyond the original set. All are optional, so
+    # existing clients send the same jobs as before.
+    page_set: PageSet | None = None
+    pages_per_sheet: PagesPerSheet | None = None
+    pages_per_sheet_layout: PagesPerSheetLayout | None = None
+    page_border: PageBorder | None = None
+    scaling: Scaling | None = None
+    scale_percent: int | None = Field(default=None, ge=10, le=400)
+    reverse_order: bool | None = None
+    media_source: str | None = None
+    borderless: bool | None = None
+    advanced: dict[str, str] | None = None
+
+    @model_validator(mode="after")
+    def _check_scaling(self) -> "PrintOptions":
+        if self.scale_percent is not None:
+            if self.scaling not in (None, "none"):
+                raise ValueError("scale_percent cannot be combined with scaling other than none")
+            if self.fit_to_page:
+                raise ValueError("scale_percent cannot be combined with fit_to_page")
+            if self.pages_per_sheet not in (None, 1):
+                raise ValueError("scale_percent requires pages_per_sheet=1")
+        return self
 
     def to_cups_options(
         self,
@@ -57,8 +87,29 @@ class PrintOptions(BaseModel):
             mapper.map_collate(self.collate, self.copies, applied, unsupported, warnings)
         if self.media_type is not None:
             mapper.map_media_type(self.media_type, applied, unsupported, warnings)
-        if self.fit_to_page is not None:
+        if self.scale_percent is not None:
+            mapper.map_scale_percent(applied, unsupported, warnings)
+        elif self.scaling is not None:
+            mapper.map_scaling(self.scaling, applied, unsupported, warnings)
+            if self.fit_to_page is not None:
+                warnings.append("Ignored fit_to_page because scaling was set")
+        elif self.fit_to_page is not None:
             mapper.map_fit_to_page(self.fit_to_page, applied, unsupported, warnings)
+        if self.pages_per_sheet is not None and self.pages_per_sheet > 1:
+            mapper.map_number_up(
+                self.pages_per_sheet, self.pages_per_sheet_layout, self.page_border,
+                applied, unsupported, warnings,
+            )
+        elif self.pages_per_sheet_layout is not None or self.page_border not in (None, "none"):
+            warnings.append("Ignored pages_per_sheet_layout and page_border because pages_per_sheet=1")
+        if self.reverse_order:
+            mapper.map_reverse_order(applied, unsupported, warnings)
+        if self.media_source is not None:
+            mapper.map_media_source(self.media_source, applied, unsupported, warnings)
+        if self.borderless is not None:
+            mapper.map_bool("borderless", self.borderless, ("StpFullBleed",), applied, unsupported, warnings)
+        if self.advanced:
+            mapper.map_advanced(self.advanced, applied, unsupported, warnings)
         if self.model_extra:
             for name in sorted(self.model_extra):
                 unsupported.append(name)
@@ -118,6 +169,19 @@ class _OptionMapper:
         applied: dict[str, str],
         warnings: list[str],
     ) -> None:
+        standard_values = {
+            "portrait": "3",
+            "landscape": "4",
+            "reverse-landscape": "5",
+            "reverse-portrait": "6",
+        }
+        # CUPS lays out pages (and pages per sheet) with orientation-requested.
+        # A driver rotation such as Gutenprint's StpOrientation happens after
+        # that layout, so it is only the fallback.
+        if self._supports("orientation-requested", standard_values[value]):
+            applied["orientation-requested"] = standard_values[value]
+            return
+
         ppd_values = {
             "portrait": "Portrait",
             "landscape": "Landscape",
@@ -129,12 +193,6 @@ class _OptionMapper:
             warnings.append("Mapped orientation through detected PPD StpOrientation option")
             return
 
-        standard_values = {
-            "portrait": "3",
-            "landscape": "4",
-            "reverse-landscape": "5",
-            "reverse-portrait": "6",
-        }
         applied["orientation-requested"] = standard_values[value]
         if self.capabilities and "orientation-requested" not in self.capabilities:
             warnings.append("Applied standard orientation-requested option without detected queue support")
@@ -258,6 +316,7 @@ class _OptionMapper:
             return
 
         for option_name, fit_value in (
+            ("print-scaling", "fit"),
             ("fit-to-page", "true"),
             ("fitplot", "true"),
             ("StpiShrinkOutput", "Shrink"),
@@ -270,6 +329,121 @@ class _OptionMapper:
 
         unsupported.append("fit_to_page")
         warnings.append("Dropped fit_to_page because no compatible CUPS/Gutenprint scaling option was detected")
+
+    def map_scale_percent(
+        self,
+        applied: dict[str, str],
+        unsupported: list[str],
+        warnings: list[str],
+    ) -> None:
+        # The print service scales PDF page content itself; CUPS must then
+        # print the page at its actual size instead of fitting it again.
+        if self._supports("print-scaling", "none") or not self.capabilities:
+            applied["print-scaling"] = "none"
+            return
+        unsupported.append("scale_percent")
+        warnings.append("Dropped scale_percent because the queue cannot print at actual size")
+
+    def map_scaling(
+        self,
+        value: str,
+        applied: dict[str, str],
+        unsupported: list[str],
+        warnings: list[str],
+    ) -> None:
+        if self._supports("print-scaling", value):
+            applied["print-scaling"] = value
+            return
+        if not self.capabilities:
+            applied["print-scaling"] = value
+            warnings.append("Applied print-scaling without detected queue capabilities")
+            return
+        unsupported.append("scaling")
+        warnings.append(f"Dropped scaling={value} because the queue does not advertise it")
+
+    def map_number_up(
+        self,
+        value: int,
+        layout: str | None,
+        border: str | None,
+        applied: dict[str, str],
+        unsupported: list[str],
+        warnings: list[str],
+    ) -> None:
+        if not (self._supports("number-up", str(value)) or not self.capabilities):
+            unsupported.append("pages_per_sheet")
+            warnings.append(f"Dropped pages_per_sheet={value} because the queue does not advertise it")
+            return
+        applied["number-up"] = str(value)
+        if layout is not None:
+            if self._supports("number-up-layout", layout) or not self.capabilities:
+                applied["number-up-layout"] = layout
+            else:
+                unsupported.append("pages_per_sheet_layout")
+                warnings.append("Dropped pages_per_sheet_layout because the queue does not advertise it")
+        if border not in (None, "none"):
+            # CUPS has no page-border-supported attribute; the same filter
+            # that performs number-up draws the border.
+            applied["page-border"] = str(border)
+
+    def map_reverse_order(
+        self,
+        applied: dict[str, str],
+        unsupported: list[str],
+        warnings: list[str],
+    ) -> None:
+        # CUPS reverses whole sheets, so duplex fronts and backs stay paired.
+        if self._supports("page-delivery", "reverse-order") or not self.capabilities:
+            applied["page-delivery"] = "reverse-order"
+            return
+        unsupported.append("reverse_order")
+        warnings.append("Dropped reverse_order because the queue does not advertise page-delivery")
+
+    def map_media_source(
+        self,
+        value: str,
+        applied: dict[str, str],
+        unsupported: list[str],
+        warnings: list[str],
+    ) -> None:
+        slots = self.capabilities.get("InputSlot", set())
+        wanted = value.strip().lower()
+        selected = next((slot for slot in sorted(slots) if slot.lower() == wanted), None)
+        if selected is None and wanted == "auto":
+            selected = next((slot for slot in sorted(slots) if slot.lower().startswith("auto")), None)
+        if selected is not None:
+            applied["InputSlot"] = selected
+            return
+        if self._supports("media-source", wanted):
+            applied["media-source"] = wanted
+            return
+        if not self.capabilities:
+            applied["InputSlot"] = value
+            warnings.append("Applied InputSlot without detected queue capabilities")
+            return
+        unsupported.append("media_source")
+        warnings.append("Dropped media_source because value is not in detected queue capabilities")
+
+    def map_advanced(
+        self,
+        advanced: dict[str, str],
+        applied: dict[str, str],
+        unsupported: list[str],
+        warnings: list[str],
+    ) -> None:
+        """Pass through driver options exactly as the PPD lists them."""
+        for name in sorted(advanced):
+            value = advanced[name]
+            if name in ADVANCED_RESERVED_OPTIONS:
+                unsupported.append(f"advanced.{name}")
+                warnings.append(f"Dropped advanced {name}; use paper_size instead")
+            elif name in applied:
+                warnings.append(f"Ignored advanced {name} because a print setting already sets it")
+            elif name in self.capabilities and value in self.capabilities[name]:
+                applied[name] = value
+            else:
+                unsupported.append(f"advanced.{name}")
+                warnings.append(f"Dropped advanced {name}={value} because it is not a detected choice")
 
     def map_choice(
         self,
@@ -354,7 +528,11 @@ class _OptionMapper:
                 if match:
                     x_dpi = int(match.group(1))
                     y_dpi = int(match.group(2) or match.group(1))
-                    resolutions.append(((x_dpi, y_dpi), choice))
+                    # Gutenprint encodes print modes as fake resolutions such as
+                    # 605x600dpi (photo) or 612x600dpi (T-shirt). Real ones are
+                    # multiples of 30 dpi.
+                    if x_dpi % 30 == 0 and y_dpi % 30 == 0:
+                        resolutions.append(((x_dpi, y_dpi), choice))
             if resolutions:
                 highest = max(resolutions)
                 # Do not label an ordinary 600 dpi queue as offering high quality.

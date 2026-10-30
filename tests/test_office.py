@@ -572,13 +572,12 @@ def test_active_fields_rejected(tmp_path,content):
 
 
 def test_preview_timeout_is_explicit(office_client,monkeypatch):
-    import pdf2image
-    from pdf2image.exceptions import PDFPopplerTimeoutError
+    import subprocess
     client,_,_,_=office_client
     info=client.post('/files',files={'file':('file.pdf',make_pdf())}).json()
     def fail(*args,**kwargs):
-        raise PDFPopplerTimeoutError('timeout')
-    monkeypatch.setattr(pdf2image,'convert_from_path',fail)
+        raise subprocess.TimeoutExpired(args[0], 30)
+    monkeypatch.setattr(subprocess,'run',fail)
     response=client.get(f"/files/{info['file_id']}/preview/1")
     assert response.status_code==504
 

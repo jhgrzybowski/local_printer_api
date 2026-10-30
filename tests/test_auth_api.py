@@ -9,6 +9,7 @@ from pypdf import PdfWriter
 
 from app.main import app, get_cups_client, get_database, get_file_storage
 from app.services.auth import hash_token
+from app.services.cups_client import PrinterProfile
 from app.services.database import Database
 from app.services.file_storage import TempFileStorage
 from app.settings import SESSION_COOKIE_NAME
@@ -22,7 +23,7 @@ class FakeCupsClient:
         self.active_override: dict[str, Any] = {}
         self.actions: list[tuple[str, int]] = []
 
-    def get_queue(self) -> dict[str, Any]:
+    def get_queue(self, probe_max_age: float | None = None) -> dict[str, Any]:
         return {
             "name": "Canon_MG5350",
             "exists": True,
@@ -38,6 +39,9 @@ class FakeCupsClient:
             "PageSize": {"A4"},
             "ColorModel": {"Gray", "RGB"},
         }
+
+    def get_printer_profile(self) -> PrinterProfile:
+        return PrinterProfile(self.get_option_capabilities())
 
     def print_file(self, path: Path, title: str, options: dict[str, str]) -> int:
         return 321
@@ -519,3 +523,4 @@ def test_cups_job_reads_are_scoped_to_user_history(tmp_path: Path) -> None:
     assert bob_jobs.json()["counts"] == {"active": 0, "completed": 0, "all": 0}
     assert alice_job.status_code == 200
     assert bob_job.status_code == 404
+

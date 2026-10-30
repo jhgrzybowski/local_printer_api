@@ -75,6 +75,8 @@ DB_PATH = os.getenv("DB_PATH", "/var/lib/local-printer-api/app.db")
 MAX_UPLOAD_MB = _env_int("MAX_UPLOAD_MB", 50)
 MAX_IMAGE_PIXELS = _env_int("MAX_IMAGE_PIXELS", 30_000_000)
 PREVIEW_DPI = _env_int("PREVIEW_DPI", 110)
+# Poppler renders run in parallel up to this limit; extra requests wait.
+PREVIEW_CONCURRENCY = _env_int("PREVIEW_CONCURRENCY", min(4, os.cpu_count() or 1))
 CORS_ALLOWED_ORIGINS = _env_csv("CORS_ALLOWED_ORIGINS", DEFAULT_CORS_ALLOWED_ORIGINS)
 SESSION_COOKIE_NAME = os.getenv("SESSION_COOKIE_NAME", "local_printer_session")
 SESSION_TTL_DAYS = _env_int("SESSION_TTL_DAYS", 30)
@@ -84,6 +86,8 @@ if UPLOAD_TTL_DAYS < 1 or HISTORY_TTL_DAYS < 1:
     raise ValueError("UPLOAD_TTL_DAYS and HISTORY_TTL_DAYS must be at least 1")
 if MAX_IMAGE_PIXELS < 1:
     raise ValueError("MAX_IMAGE_PIXELS must be at least 1")
+if PREVIEW_CONCURRENCY < 1 or PREVIEW_DPI < 1:
+    raise ValueError("PREVIEW_CONCURRENCY and PREVIEW_DPI must be at least 1")
 SESSION_COOKIE_SECURE = os.getenv("SESSION_COOKIE_SECURE", "").strip().lower() in {
     "1",
     "true",
