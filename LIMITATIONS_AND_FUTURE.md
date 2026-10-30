@@ -199,9 +199,10 @@ Known behavior:
   Gutenprint's automatic mode. That preset alone printed high quality the same
   as normal, so high also selects the driver's HIGH mode for the paper and
   sides (plain, two-sided/envelope, or photo).
-* `quality=high` never selects a Gutenprint pseudo-resolution such as
-  `612x600dpi` (T-shirt mode) or `605x600dpi` (photo mode); those stay
-  reachable through the advanced `Resolution` option.
+* Gutenprint modes are chosen only by their labels: high quality never
+  treats a pseudo-resolution such as `612x600dpi` (T-shirt mode) as a higher
+  resolution. Every mode stays reachable through the advanced `Resolution`
+  option.
 * `collate` is ignored quietly when `copies=1`.
 * `media_type` maps only when safe detected values exist.
 * `fit_to_page` uses `print-scaling=fit` when advertised.

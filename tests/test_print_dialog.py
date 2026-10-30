@@ -258,8 +258,7 @@ def test_preview_list_reports_page_sizes_for_layout(client: TestClient) -> None:
 @pytest.mark.parametrize(("options", "resolution"), [
     ({"quality": "high"}, "600dpi"),
     ({"quality": "high", "media_type": "glossy"}, "605x600dpi"),
-    # The excerpt has no duplex HIGH mode, so CUPS's preset alone applies.
-    ({"quality": "high", "duplex": "long-edge"}, None),
+    ({"quality": "high", "duplex": "long-edge"}, "603x600dpi"),
     ({"quality": "high", "advanced": {"Resolution": "300dpi"}}, "300dpi"),
     ({"quality": "normal"}, None),
 ])
@@ -272,3 +271,26 @@ def test_high_quality_selects_the_driver_high_mode(
 
     assert applied.get("Resolution") == resolution
     assert applied["print-quality"] == ("5" if options["quality"] == "high" else "4")
+
+
+@pytest.mark.parametrize(("duplex", "resolution"), [(None, "603x600dpi"), ("none", "600dpi")])
+def test_high_quality_follows_the_queue_default_sides(
+    storage: TempFileStorage, isolated_database: Database, duplex: str | None, resolution: str,
+) -> None:
+    class DuplexDefaultQueue(DialogCupsClient):
+        def get_printer_profile(self) -> PrinterProfile:
+            return PrinterProfile(self.get_option_capabilities(), self.ppd, {"sides-default": "two-sided-long-edge"})
+
+    app.dependency_overrides.clear()
+    app.dependency_overrides[get_file_storage] = lambda: storage
+    app.dependency_overrides[get_cups_client] = lambda: DuplexDefaultQueue()
+    with TestClient(app) as test_client:
+        signup_user(test_client)
+        file_id = upload(test_client, numbered_pdf([100]))
+        options = {"quality": "high", **({"duplex": duplex} if duplex else {})}
+        applied = test_client.post(
+            "/print/validate", json={"file_id": file_id, "options": options},
+        ).json()["applied_options"]
+    app.dependency_overrides.clear()
+
+    assert applied["Resolution"] == resolution

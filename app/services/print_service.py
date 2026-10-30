@@ -11,7 +11,7 @@ from app.services.cups_client import CupsClient, CupsClientError, PrinterProfile
 from app.services.file_storage import StoredFile, TempFileStorage
 from app.services.layout import PageBox, Paper, plan_layout
 from app.services.page_filter import PageRangeError, parse_page_ranges, select_pages, write_pdf_pages
-from app.services.ppd import PpdInfo, paper_size
+from app.services.ppd import paper_size
 from app.services.preview import PreviewError, PreviewService
 from app.services.printer_reachability import PROBE_FRESH_SECONDS
 from app.services.status_translator import translate_queue_status
@@ -159,26 +159,36 @@ def map_options(
         unsupported.append("scale_percent")
         warnings.append("Dropped scale_percent because custom scaling needs a PDF document")
     if options.quality == "high" and applied.get("print-quality") == "5" and "Resolution" not in applied:
-        mode = _driver_high_mode(profile.ppd, applied)
+        mode = _driver_high_mode(profile, applied)
         if mode is not None:
             applied["Resolution"] = mode
     conflicts = profile.ppd.conflicts(applied) if profile.ppd is not None else []
     return CupsOptionMapping(applied, unsupported, warnings), conflicts
 
 
-def _driver_high_mode(ppd: PpdInfo | None, applied: dict[str, str]) -> str | None:
+def _driver_high_mode(profile: PrinterProfile, applied: dict[str, str]) -> str | None:
     """Pick the driver's high-quality mode for this paper and sides.
 
     CUPS's preset for print-quality=high only raises colour precision on the
     MG5350, which printed the same as normal. The driver's HIGH modes are
     what its own high-quality setting uses.
     """
+    ppd = profile.ppd
     resolution = ppd.options.get("Resolution") if ppd is not None else None
-    if resolution is None:
+    if ppd is None or resolution is None:
         return None
-    media_option = ppd.options.get("MediaType") if ppd is not None else None
+    media_option = ppd.options.get("MediaType")
     media = applied.get("MediaType") or (media_option.default if media_option else None) or "Plain"
-    two_sided = applied.get("sides", "one-sided") != "one-sided" or applied.get("Duplex", "None") != "None"
+    # Settings the job leaves out follow the queue's defaults.
+    duplex_option = ppd.options.get("Duplex")
+    if "sides" in applied:
+        two_sided = applied["sides"] != "one-sided"
+    elif "Duplex" in applied:
+        two_sided = applied["Duplex"] != "None"
+    elif profile.ipp.get("sides-default"):
+        two_sided = profile.ipp["sides-default"] != "one-sided"
+    else:
+        two_sided = bool(duplex_option and duplex_option.default not in (None, "None"))
     if PHOTO_MEDIA_RE.search(media):
         pattern = PHOTO_HIGH_MODE_RE
     elif two_sided or media.lower() in {"envelope", "hagaki"}:

@@ -112,6 +112,8 @@
 *StpResolutionMap: 601x600dpi None
 *Resolution 600dpi/600x600 DPI HIGH:	"<</HWResolution[600 600]/cupsCompression 1>>setpagedevice"
 *StpResolutionMap: 600dpi 600x600dpi_high
+*Resolution 603x600dpi/600x600 DPI HIGH duplex/Env/Hagaki:	"<</HWResolution[600 600]/cupsCompression 3>>setpagedevice"
+*StpResolutionMap: 603x600dpi 600x600dpi_high2
 *Resolution 300dpi/300x300 DPI:	"<</HWResolution[300 300]/cupsCompression 5>>setpagedevice"
 *StpResolutionMap: 300dpi 300x300dpi
 *Resolution 605x600dpi/600x600 DPI PHOTO HIGH:	"<</HWResolution[600 600]/cupsCompression 6>>setpagedevice"

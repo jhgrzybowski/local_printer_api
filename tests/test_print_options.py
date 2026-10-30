@@ -399,6 +399,6 @@ def test_options_summary_describes_new_dialog_settings() -> None:
     # Settings with a dedicated control stay out of the advanced list...
     assert not {"PageSize", "Duplex", "ColorModel", "MediaType", "InputSlot", "StpFullBleed"} & set(advanced)
     # ...but photo and other print modes stay reachable.
-    assert advanced["Resolution"]["choices"][3] == {"value": "605x600dpi", "label": "600x600 DPI PHOTO HIGH"}
+    assert {"value": "605x600dpi", "label": "600x600 DPI PHOTO HIGH"} in advanced["Resolution"]["choices"]
     assert advanced["StpImageType"]["default"] == "TextGraphics"
     assert summary["driver"] == "Canon PIXMA MG5350 - CUPS+Gutenprint v5.3.4"
