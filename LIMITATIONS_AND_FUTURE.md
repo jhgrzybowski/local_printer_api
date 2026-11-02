@@ -92,13 +92,24 @@ Current wording:
 Preview is for user convenience and is not guaranteed to match final printer-driver output exactly.
 ```
 
+`/print/validate` returns a layout plan that follows CUPS rules for pages per
+sheet, scaling, orientation, and two-sided pairing. It was checked against
+pdftopdf output, but it shows each sheet turned so its pages read upright and
+does not model driver margins. Orientation uses the standard
+`orientation-requested` attribute that pdftopdf lays out; queues that only
+offer a driver rotation (Gutenprint's `StpOrientation`) rotate after layout, so
+the plan is less certain there.
+
+Plain text is laid out at upload as an A4 PDF (10 pt DejaVu Sans Mono,
+80 columns by 60 lines, embedded so Polish and other non-Latin-1 letters print
+correctly). Without that font, or past 1,000 pages, text goes to CUPS as
+before: no preview, and CUPS's text filter garbles non-Latin-1 letters.
+
 Future options:
 
-* expose printable area,
 * warn when document page size differs from selected paper,
-* generate preview with selected paper size overlay,
-* add margin visualization,
-* add better fit-to-page simulation.
+* render text files to PDF so they can be previewed,
+* server-rendered sheet images for clients that cannot compose the plan.
 
 ---
 
@@ -185,11 +196,23 @@ Unsupported options are dropped and reported.
 
 Known behavior:
 
+* Standard IPP job attributes that the queue advertises (`sides`,
+  `print-color-mode`, `print-quality`, `number-up`, `print-scaling`,
+  `page-delivery`, collated copies) are preferred over PPD options. CUPS then
+  applies its own driver presets: on the MG5350 queue, normal quality becomes
+  Gutenprint's automatic mode. That preset alone printed high quality the same
+  as normal, so high also selects the driver's HIGH mode for the paper and
+  sides (plain, two-sided/envelope, or photo).
+* Gutenprint modes are chosen only by their labels: high quality never
+  treats a pseudo-resolution such as `612x600dpi` (T-shirt mode) as a higher
+  resolution. Every mode stays reachable through the advanced `Resolution`
+  option.
 * `collate` is ignored quietly when `copies=1`.
-* `collate` may warn for multiple copies if no compatible CUPS option is detected.
 * `media_type` maps only when safe detected values exist.
-* `fit_to_page` maps only when a detected scaling option exists.
-* orientation may use `StpOrientation` or standard `orientation-requested`.
+* `fit_to_page` uses `print-scaling=fit` when advertised.
+* orientation uses `orientation-requested` when advertised, otherwise `StpOrientation`.
+* Advanced options must match a listed choice exactly; PPD constraints are
+  enforced in strict mode.
 
 Future improvements:
 
@@ -241,9 +264,10 @@ Future improvement:
 
 ## 11. Fit-to-page behavior may vary
 
-`fit_to_page` is only safe when the queue exposes a compatible scaling/shrink option.
+`fit_to_page` and `scaling` use the standard `print-scaling` attribute, which
+CUPS applies before the driver. Queues without it fall back to a driver option.
 
-In Gutenprint, relevant options may include:
+In Gutenprint, relevant driver options may include:
 
 ```text
 StpiShrinkOutput

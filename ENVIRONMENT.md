@@ -169,6 +169,8 @@ See `DEPLOYMENT_DOCKER.md` for the full container workflow.
 | `OFFICE_MEMORY_MB` | `1536` | Per-process virtual address-space limit. |
 | `OFFICE_MAX_PAGES` | `500` | Maximum pages in the generated PDF. |
 | `MAX_IMAGE_PIXELS` | `30000000` | Maximum decoded pixel count for PNG/JPEG upload and preview. |
+| `PREVIEW_CONCURRENCY` | CPU count, up to `4` | Preview pages rendered at once; further requests wait. |
+| `TEXT_FONT_PATH` | DejaVu Sans Mono if installed | TrueType monospace font for laying out plain text as a PDF. |
 
 `OFFICE_TIMEOUT_SECONDS` sets the parent process wall-clock wait. The conversion
 worker receives the same value as its soft `RLIMIT_CPU` budget in CPU-seconds;
@@ -177,7 +179,8 @@ plus one second. `/capabilities` exposes both CPU limits as
 `cpu_time_soft_limit_seconds` and `cpu_time_hard_limit_seconds`.
 
 PDF previews have a 30-second render timeout and a 1600-pixel maximum dimension.
-`PREVIEW_DPI` controls their resolution. All numeric limits must be positive.
+`PREVIEW_DPI` controls their resolution; `?size=thumb` pages are 320 pixels on
+the long side. All numeric limits must be positive.
 `/capabilities` reports effective Office, upload, image, and preview limits.
 Office format availability is detected with `dpkg-query`, matching the Ubuntu
 deployment image. Changes to conversion settings require a backend restart. See

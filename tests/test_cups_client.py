@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -52,8 +53,8 @@ def test_capabilities_fail_when_queue_is_missing() -> None:
     client = CupsClient("Canon_MG5350")
 
     class Connection:
-        def getPrinters(self) -> dict[str, Any]:
-            return {}
+        def getPrinterAttributes(self, name: str, requested_attributes: list[str]) -> dict[str, Any]:
+            raise RuntimeError(1030, "client-error-not-found")
 
     client._connection = lambda: Connection()  # type: ignore[method-assign]
     with pytest.raises(CupsClientError, match="does not exist"):
@@ -87,7 +88,7 @@ def test_get_queue_queries_accepting_jobs_explicitly(
     client._connection = lambda: Connection()  # type: ignore[method-assign]
     monkeypatch.setattr(
         "app.services.cups_client.probe_printer_reachability",
-        lambda _: {"checked": True, "reachable": True},
+        lambda *_, **__: {"checked": True, "reachable": True},
     )
 
     result = client.get_queue()
@@ -115,7 +116,7 @@ def test_get_queue_keeps_queue_snapshot_when_accepting_jobs_query_fails(
     client._connection = lambda: Connection()  # type: ignore[method-assign]
     monkeypatch.setattr(
         "app.services.cups_client.probe_printer_reachability",
-        lambda _: {"checked": True, "reachable": True},
+        lambda *_, **__: {"checked": True, "reachable": True},
     )
 
     result = client.get_queue()
@@ -124,35 +125,115 @@ def test_get_queue_keeps_queue_snapshot_when_accepting_jobs_query_fails(
     assert "printer-is-accepting-jobs" not in result["attributes"]
 
 
-def test_capabilities_fail_when_both_sources_fail() -> None:
+MINIMAL_PPD = (
+    "*NickName: \"Test Printer\"\n"
+    "*OpenUI *PageSize/Media Size: PickOne\n"
+    "*DefaultPageSize: A4\n"
+    "*PageSize A4/A4: \"<</PageSize[595 842]>>setpagedevice\"\n"
+    "*CloseUI: *PageSize\n"
+    "*PaperDimension A4/A4: \"595 842\"\n"
+)
+
+
+class ProfileConnection:
+    """CUPS answering for one queue with a PPD and IPP job attributes."""
+
+    def __init__(self, tmp_path: Path, ppd: str | None = MINIMAL_PPD) -> None:
+        self.tmp_path = tmp_path
+        self.ppd = ppd
+        self.ppd_requests: list[float | None] = []
+        self.attribute_requests = 0
+        self.written: list[Path] = []
+
+    def getPrinterAttributes(self, name: str, requested_attributes: list[str]) -> dict[str, Any]:
+        self.attribute_requests += 1
+        return {
+            "printer-config-change-time": 10,
+            "print-quality-supported": [4, 5],
+            "number-up-supported": [1, 2, 4],
+            "multiple-document-handling-supported": ["separate-documents-collated-copies"],
+        }
+
+    def getPPD3(self, name: str, modtime: float | None = None) -> tuple[int, float, str]:
+        self.ppd_requests.append(modtime)
+        path = self.tmp_path / f"ppd-{len(self.ppd_requests)}"
+        path.write_text(self.ppd or "", encoding="utf-8")
+        self.written.append(path)
+        if self.ppd is None:
+            return 404, 0.0, str(path)
+        if modtime == 50.0:
+            return 304, 50.0, str(path)
+        return 200, 50.0, str(path)
+
+
+def test_capabilities_merge_ppd_options_with_ipp_job_attributes(tmp_path: Path) -> None:
+    client = CupsClient("Canon_MG5350")
+    connection = ProfileConnection(tmp_path)
+    client._connection = lambda: connection  # type: ignore[method-assign]
+
+    profile = client.get_printer_profile()
+
+    assert profile.capabilities["PageSize"] == {"A4"}
+    assert profile.capabilities["print-quality"] == {"4", "5"}
+    assert profile.capabilities["number-up"] == {"1", "2", "4"}
+    assert profile.capabilities["collate"] == {"true", "false"}
+    assert profile.ppd is not None and profile.ppd.nickname == "Test Printer"
+    assert profile.ppd.paper_sizes["A4"].width == 595
+    # pycups leaves a temporary PPD copy behind; the client removes it.
+    assert not any(path.exists() for path in connection.written)
+
+
+def test_capabilities_are_cached_and_revalidated_with_a_304(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services import cups_client
+
+    client = CupsClient("Canon_MG5350")
+    connection = ProfileConnection(tmp_path)
+    client._connection = lambda: connection  # type: ignore[method-assign]
+    clock = [1000.0]
+    monkeypatch.setattr(cups_client.time, "monotonic", lambda: clock[0])
+
+    first = client.get_printer_profile()
+    client.get_printer_profile()
+    assert connection.ppd_requests == [None]
+    assert connection.attribute_requests == 1
+
+    clock[0] += cups_client.CAPABILITY_CACHE_SECONDS + 1
+    again = client.get_printer_profile()
+
+    assert connection.ppd_requests == [None, 50.0]
+    assert again.ppd is first.ppd
+    assert not any(path.exists() for path in connection.written)
+
+
+def test_capabilities_fall_back_to_lpoptions_without_a_ppd(tmp_path: Path) -> None:
+    client = CupsClient("Canon_MG5350")
+    client._connection = lambda: ProfileConnection(tmp_path, ppd=None)  # type: ignore[method-assign]
+    client._get_lpoptions_capabilities = lambda: {"PageSize": {"Letter"}}  # type: ignore[method-assign]
+
+    profile = client.get_printer_profile()
+
+    assert profile.ppd is None
+    assert profile.capabilities["PageSize"] == {"Letter"}
+    assert profile.capabilities["print-quality"] == {"4", "5"}
+
+
+def test_capabilities_fail_when_every_source_is_empty(tmp_path: Path) -> None:
     client = CupsClient("Canon_MG5350")
 
-    class Connection:
-        def getPrinters(self) -> dict[str, Any]:
-            return {"Canon_MG5350": {}}
+    class EmptyConnection(ProfileConnection):
+        def getPrinterAttributes(self, name: str, requested_attributes: list[str]) -> dict[str, Any]:
+            return {}
 
-    client._connection = lambda: Connection()  # type: ignore[method-assign]
-    client._get_lpoptions_capabilities = lambda: {}  # type: ignore[method-assign]
-    client._get_ppd_capabilities = lambda: {}  # type: ignore[method-assign]
-    with pytest.raises(CupsClientError, match="capability detection failed"):
-        client.get_option_capabilities()
-
-
-def test_capabilities_use_ppd_when_lpoptions_fails() -> None:
-    client = CupsClient("Canon_MG5350")
-
-    class Connection:
-        def getPrinters(self) -> dict[str, Any]:
-            return {"Canon_MG5350": {}}
-
-    client._connection = lambda: Connection()  # type: ignore[method-assign]
+    client._connection = lambda: EmptyConnection(tmp_path, ppd=None)  # type: ignore[method-assign]
 
     def unavailable_lpoptions() -> dict[str, set[str]]:
         raise CupsClientError("lpoptions failed")
 
     client._get_lpoptions_capabilities = unavailable_lpoptions  # type: ignore[method-assign]
-    client._get_ppd_capabilities = lambda: {"PageSize": {"A4"}}  # type: ignore[method-assign]
-    assert client.get_option_capabilities() == {"PageSize": {"A4"}}
+    with pytest.raises(CupsClientError, match="capability detection failed"):
+        client.get_option_capabilities()
 
 
 def test_list_jobs_maps_active_scope_to_not_completed() -> None:
@@ -299,3 +380,18 @@ def test_job_reuse_between_authorization_and_action_is_rejected(
         getattr(client, action)(1, expected_job=authorized_job)
 
     assert connection.cancelled == []
+
+
+def test_normalize_job_reports_live_progress() -> None:
+    job = normalize_job(7, {
+        "job-state": 5,
+        "time-at-processing": 1700,
+        "job-impressions-completed": 2,
+        "job-media-sheets-completed": 1,
+        "job-media-progress": 45,
+        "job-printer-state-message": "Printing page 3",
+    })
+
+    assert (job["pages_completed"], job["sheets_completed"], job["media_progress"]) == (2, 1, 45)
+    assert job["state_message"] == "Printing page 3"
+    assert job["processing_at"] == 1700

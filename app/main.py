@@ -18,6 +18,7 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import FileResponse, HTMLResponse
 from starlette.background import BackgroundTask
@@ -46,15 +47,19 @@ from app.services.mime_detection import SUPPORTED_MIME_TYPES
 from app.services.preview import (
     PDF_PREVIEW_TIMEOUT_SECONDS,
     PREVIEW_MAX_DIMENSION,
+    PREVIEW_SIZES,
+    PREVIEW_THUMB_DIMENSION,
     PreviewError,
     PreviewService,
 )
-from app.services.print_service import PrintRequestError, prepare_print_file, submit_print_job
+from app.services.print_service import PrintRequestError, submit_print_job, validate_print_job
+from app.services.text_render import find_text_font
 from app.services.status_translator import translate_error_status, translate_queue_status
 from app.settings import (
     CORS_ALLOWED_ORIGINS,
     DB_PATH,
     MAX_IMAGE_PIXELS,
+    PREVIEW_CONCURRENCY,
     PREVIEW_DPI,
     QUEUE_NAME,
     SESSION_COOKIE_NAME,
@@ -64,6 +69,7 @@ from app.settings import (
 
 
 OPENAPI_YAML_PATH = Path(__file__).resolve().parent.parent / "openapi.yaml"
+PREVIEW_CACHE_CONTROL = "private, max-age=604800, immutable"
 LOGGER = logging.getLogger(__name__)
 HISTORY_CUPS_STATES = frozenset({
     "pending", "pending-held", "processing", "processing-stopped",
@@ -93,6 +99,12 @@ async def periodic_maintenance() -> None:
 
 
 app = FastAPI(title="Local Printer API", docs_url=None, lifespan=lifespan)
+# Printer options with every driver choice and label are about 90 KB of JSON;
+# gzip makes them about a tenth. Images and PDFs are already compressed.
+app.add_middleware(
+    GZipMiddleware, minimum_size=1024,
+    exclude_content_types=("text/event-stream", "image/png", "application/pdf"),
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ALLOWED_ORIGINS,
@@ -357,11 +369,14 @@ def get_options(
     client: CupsClient = Depends(get_cups_client),
 ) -> dict[str, object]:
     try:
-        capabilities = client.get_option_capabilities()
+        profile = client.get_printer_profile()
     except CupsClientError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
-    return build_options_summary(client.queue_name, capabilities, include_debug=debug)
+    return build_options_summary(
+        client.queue_name, dict(profile.capabilities), include_debug=debug,
+        ppd=profile.ppd, ipp=profile.ipp,
+    )
 
 
 @app.get("/jobs/{job_id}")
@@ -464,9 +479,13 @@ async def upload_file(
 def capabilities(storage: TempFileStorage = Depends(get_file_storage)) -> dict[str, object]:
     converter = OfficeConverter(storage.root / "conversion-work")
     office_formats = converter.format_availability()
+    text_font = find_text_font()
     available = any(office_formats.values())
     return {
         "native_mime_types": sorted(SUPPORTED_MIME_TYPES),
+        # Text is laid out as a PDF with this font, giving it a preview.
+        "text": {"rendered_to_pdf": text_font is not None,
+                 "font": text_font.stem if text_font else None},
         "office": {"available": available, "formats": [
             {"extension": extension, "mime_type": values[0], "available": office_formats[extension]}
             for extension, values in OFFICE_FORMATS.items()
@@ -486,6 +505,9 @@ def capabilities(storage: TempFileStorage = Depends(get_file_storage)) -> dict[s
             "pdf_timeout_seconds": PDF_PREVIEW_TIMEOUT_SECONDS,
             "max_dimension": PREVIEW_MAX_DIMENSION,
             "dpi": PREVIEW_DPI,
+            "thumb_dimension": PREVIEW_THUMB_DIMENSION,
+            "sizes": list(PREVIEW_SIZES),
+            "concurrency": PREVIEW_CONCURRENCY,
         },
         "strict_print_options_default": True,
         "print_validation_url": "/print/validate",
@@ -529,25 +551,7 @@ def validate_print(request: PrintRequest, current_user: User = Depends(require_c
     record = get_user_file_record(storage, request.file_id, current_user)
     try:
         with storage.lease(record.file_id):
-            prepared = prepare_print_file(storage, record, request.options)
-            try:
-                capabilities = client.get_option_capabilities()
-                if not capabilities and request.strict_options:
-                    raise PrintRequestError("Printer capabilities are unavailable; cannot validate options", 503)
-                mapped = request.options.to_cups_options(capabilities)
-                status = translate_queue_status(client.get_queue())
-                return {"file_id": record.file_id, "ready_for_print": status["ready_for_print"],
-                        "valid": not mapped.unsupported_options,
-                        "page_count": record.page_count, "selected_pages": prepared.selected_pages,
-                        "applied_options": mapped.applied_options,
-                        "unsupported_options": mapped.unsupported_options,
-                        "warnings": [*record.warnings, *mapped.warnings,
-                                     *(["Printed pages preserve the user-specified page order"]
-                                       if prepared.selected_pages is not None else [])],
-                        "printable_sha256": record.printable_sha256}
-            finally:
-                if prepared.temporary:
-                    prepared.file_path.unlink(missing_ok=True)
+            return validate_print_job(client, storage, record, request.options, request.strict_options)
     except (StorageError, PrintRequestError) as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
     except CupsClientError as exc:
@@ -566,6 +570,11 @@ def list_previews(
     try:
         with storage.lease(record.file_id):
             paths = preview_service.ensure_previews(record)
+            try:
+                geometry = preview_service.page_geometry(record) or []
+            except PreviewError:
+                LOGGER.warning("Could not read page sizes for %s", record.file_id)
+                geometry = []
             return {
                 "file_id": record.file_id,
                 "page_count": record.page_count,
@@ -573,7 +582,9 @@ def list_previews(
                     {
                         "page": index,
                         "url": f"/files/{record.file_id}/preview/{index}",
+                        "thumb_url": f"/files/{record.file_id}/preview/{index}?size=thumb",
                         **({"size_bytes": path.stat().st_size} if path.exists() else {}),
+                        **(geometry[index - 1] if index <= len(geometry) else {}),
                     }
                     for index, path in enumerate(paths, start=1)
                 ],
@@ -586,6 +597,7 @@ def list_previews(
 def get_preview_page(
     file_id: str,
     page: str,
+    size: str = Query("full", description="full (default) or thumb"),
     current_user: User = Depends(require_current_user),
     storage: TempFileStorage = Depends(get_file_storage),
 ) -> FileResponse:
@@ -597,14 +609,20 @@ def get_preview_page(
         lease = storage.lease(record.file_id)
         lease.__enter__()
         try:
-            path = preview_service.preview_path(record, page_number)
+            path = preview_service.preview_path(record, page_number, size)
         except Exception:
             lease.__exit__(None, None, None)
             raise
     except (PreviewError, StorageError) as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
-    return FileResponse(path, media_type="image/png", background=BackgroundTask(lease.__exit__, None, None, None))
+    # An upload never changes, so its rendered pages can stay in the browser
+    # cache; revisiting a page or reopening the dialog costs no request.
+    return FileResponse(
+        path, media_type="image/png",
+        headers={"Cache-Control": PREVIEW_CACHE_CONTROL},
+        background=BackgroundTask(lease.__exit__, None, None, None),
+    )
 
 
 @app.get("/me/preferences")

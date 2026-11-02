@@ -13,6 +13,7 @@ RUN apt-get update \
         ca-certificates \
         curl \
         cups-client \
+        fonts-dejavu-core \
         poppler-utils \
         printer-driver-gutenprint \
         python3-cups \
